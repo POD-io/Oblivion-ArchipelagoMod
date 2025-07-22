@@ -49,4 +49,33 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-It is recommended to load a save from just before leaving the sewers. You can also play on an existing save, as long as you have not interacted with the Daedric shrine quests.
+The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
+
+# Troubleshooting: 
+
+This is Oblivion, so we have some recovery options in the event of a crash, untimely death, or other issues.
+The best advice is to Quicksave(F5) any time you receive a new item from the multiworld.
+
+## Resending Items
+```
+Messsage "Resend X"
+```
+where X is the number of items you need re-sent.
+You can check the bridge status file to see what items you have received.
+It will look like this:
+```
+Item1,Item2,Item3,Item4,Item5
+```
+If you wanted to resend items 3 - 5, you would type:
+```
+Messsage "Resend 3"
+```
+NOTE: Progressive shop items are received in a set of 3, so if you received a Progressive Shop Stock, add 3 to the number you want to resend.
+
+If you need to do a full reset, you can type the following command in the console:
+
+```
+Messsage "APReset"
+```
+
+Then reconnect in the Oblivion Remastered Client. The game will receive all previous items and reinitialize world state.
