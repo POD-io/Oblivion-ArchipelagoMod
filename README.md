@@ -1,22 +1,20 @@
-# Archipelago Integration for Oblivion Remastered
+## Archipelago Mod for Oblivion Remastered
 
-A UE4SS and .esp mod that randomizes Oblivion's 15 Daedric shrine quests for [Archipelago multiworld](https://archipelago.gg/). 
-
-Players receive shrine unlock tokens to access quests, then send completion status back to the multiworld when shrine quests are completed.
+A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/) support for Oblivion Remastered.
 
 [Download Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
 
-# Mod Manager Installation
+## Mod Manager Installation
 
 MO2 now has support for ue4ss mods. To install with MO2, follow these steps:
 
-1) Download the Dev Branch of MO2.
+##### 1. Install the Dev Branch of MO2:
 [This can be acquired on the MO2 Discord](https://discord.gg/Jjprnb5rDJ)
 
-2) [UE4SS for OblivionRemastered](https://www.nexusmods.com/oblivionremastered/mods/32) and [OBSE64](https://www.nexusmods.com/oblivionremastered/mods/282) both **need to be installed MANUALLY** -- They do not work as MO2 mods directly.
+##### 2. [UE4SS for OblivionRemastered](https://www.nexusmods.com/oblivionremastered/mods/32) and [OBSE64](https://www.nexusmods.com/oblivionremastered/mods/282) both **need to be installed MANUALLY** -- They do not work as MO2 mods directly.
 
-**Note:** 
-For the **UE4SS mod**, do not install the included dwmapi.dll file. 
+> **Note:**  
+For the **UE4SS mod**, do not install the included dwmapi.dll file.  
 For the **OBSE64 mod**, you only need the obse64_xxx_xxx.dll and obse64_loader.exe files.
 
 Your folder should look like this:
@@ -29,18 +27,25 @@ Oblivion Remastered
 |--|--|--|--obse64__xxx_xxx.dll
 |--|--|--|--obse64_loader.exe
 ```
-Image example: 
 
-3) Install the following mods into your mod manager:
-[OBSE64 ue4ss Loader](https://www.nexusmods.com/oblivionremastered/mods/3421).
-[Runtime EditorIDs](https://www.nexusmods.com/oblivionremastered/mods/1331)
-[Address Library for OBSE Plugins](https://www.nexusmods.com/oblivionremastered/mods/4475)
+<img width="332" height="216" alt="image" src="https://github.com/user-attachments/assets/3c92122c-6725-4e32-97b7-29553064135d" />
 
-4) [Download the latest release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest) and manually install (Ctrl+M in MO2) both the Archipelago.zip and ArchipelagoBridge.zip into MO2. You should see the ArchipelagoBridge mod under the UE4SS Mods tab, and the Archipelago_Oblivion.esp mod under the Plugins tab -- be sure it is enabled.
 
-Image example:
+##### 3. Install the following mods into your mod manager:  
 
-# How to use
+- [OBSE64 ue4ss Loader](https://www.nexusmods.com/oblivionremastered/mods/3421)  
+- [Runtime EditorIDs](https://www.nexusmods.com/oblivionremastered/mods/1331)  
+- [Address Library for OBSE Plugins](https://www.nexusmods.com/oblivionremastered/mods/4475)  
+- [NL Tag Remover](https://www.nexusmods.com/oblivionremastered/mods/473)
+
+##### 4. [Download the latest release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest) and manually install (Right Click --> Install Mod) both the Archipelago.zip and ArchipelagoBridge.zip into MO2.  
+You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab -- be sure it is enabled.
+
+<img width="356" height="116" alt="image" src="https://github.com/user-attachments/assets/f229fcb9-4488-4022-aba7-108b0d37feae" />
+<img width="175" height="125" alt="image" src="https://github.com/user-attachments/assets/2ca5bb2c-17d6-4523-9234-ddbf1e86b21b" />
+
+
+## How to use
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
@@ -51,17 +56,20 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 
 The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
 
-# Troubleshooting: 
+## Troubleshooting: 
 
 This is Oblivion, so we have some recovery options in the event of a crash, untimely death, or other issues.
 The best advice is to Quicksave(F5) any time you receive a new item from the multiworld.
 
-## Resending Items
+#### Resending Items
+
+You can use the console(~) to resend recent items. Type:
+
 ```
 Messsage "Resend X"
 ```
 where X is the number of items you need re-sent.
-You can check the bridge status file to see what items you have received.
+You can check the bridge status file to see what items you have received.  
 It will look like this:
 ```
 Item1,Item2,Item3,Item4,Item5
