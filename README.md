@@ -71,7 +71,7 @@ The best advice is to Quicksave(F5) any time you receive a new item from the mul
 You can use the console(~) to resend recent items. Type:
 
 ```
-Messsage "Resend X"
+Message "Resend X"
 ```
 where X is the number of items you need re-sent.
 You can check the bridge status file to see what items you have received.  
@@ -81,14 +81,14 @@ Item1,Item2,Item3,Item4,Item5
 ```
 If you wanted to resend items 3 - 5, you would type:
 ```
-Messsage "Resend 3"
+Message "Resend 3"
 ```
 NOTE: Progressive shop items are received in a set of 3, so if you received a Progressive Shop Stock, add 3 to the number you want to resend.
 
 If you need to do a full reset, you can type the following command in the console:
 
 ```
-Messsage "APReset"
+Message "APReset"
 ```
 
 Then reconnect in the Oblivion Remastered Client. The game will receive all previous items and reinitialize world state.
