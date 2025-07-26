@@ -44,8 +44,10 @@ You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the *
 <img width="356" height="116" alt="image" src="https://github.com/user-attachments/assets/f229fcb9-4488-4022-aba7-108b0d37feae" />
 <img width="175" height="125" alt="image" src="https://github.com/user-attachments/assets/2ca5bb2c-17d6-4523-9234-ddbf1e86b21b" />
 
-
 ## How to use
+
+> **Note**:
+> The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
@@ -54,7 +56,10 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
+Make sure to launch through using the obse64_loader, as seen here:
+
+<img width="500" height="100" alt="image" src="https://github.com/user-attachments/assets/4816d8c9-f41a-4bd5-a5a3-9094593fa712" />
+
 
 ## Troubleshooting: 
 
