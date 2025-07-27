@@ -44,8 +44,10 @@ You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the *
 <img width="356" height="116" alt="image" src="https://github.com/user-attachments/assets/f229fcb9-4488-4022-aba7-108b0d37feae" />
 <img width="175" height="125" alt="image" src="https://github.com/user-attachments/assets/2ca5bb2c-17d6-4523-9234-ddbf1e86b21b" />
 
-
 ## How to use
+
+> **Note**:
+> The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
@@ -54,7 +56,10 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
+Make sure to launch through using the obse64_loader, as seen here:
+
+<img width="500" height="100" alt="image" src="https://github.com/user-attachments/assets/4816d8c9-f41a-4bd5-a5a3-9094593fa712" />
+
 
 ## Troubleshooting: 
 
@@ -66,7 +71,7 @@ The best advice is to Quicksave(F5) any time you receive a new item from the mul
 You can use the console(~) to resend recent items. Type:
 
 ```
-Messsage "Resend X"
+Message "Resend X"
 ```
 where X is the number of items you need re-sent.
 You can check the bridge status file to see what items you have received.  
@@ -76,14 +81,14 @@ Item1,Item2,Item3,Item4,Item5
 ```
 If you wanted to resend items 3 - 5, you would type:
 ```
-Messsage "Resend 3"
+Message "Resend 3"
 ```
 NOTE: Progressive shop items are received in a set of 3, so if you received a Progressive Shop Stock, add 3 to the number you want to resend.
 
 If you need to do a full reset, you can type the following command in the console:
 
 ```
-Messsage "APReset"
+Message "APReset"
 ```
 
 Then reconnect in the Oblivion Remastered Client. The game will receive all previous items and reinitialize world state.
