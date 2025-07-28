@@ -55,6 +55,7 @@ local targetFrames = 300
 
 -- Current goal from settings file
 local currentGoal = ""
+local goalRequired = 0
 
 
 local function getArchipelagoPath(filename)
@@ -224,6 +225,9 @@ local function loadSettings()
             elseif key == "goal" then
                 currentGoal = value
                 writeLog("Found goal: " .. value)
+            elseif key == "goal_required" then
+                goalRequired = tonumber(value) or 0
+                writeLog("Found goal_required: " .. tostring(goalRequired))
             elseif key == "mod_fully_initialized" and value == "True" then
                 modFullyInitialized = true
                 writeLog("Found mod already fully initialized from previous session")
@@ -842,6 +846,15 @@ local function handleInitialization()
     
     -- Check if goal message needs to be shown (only once per seed)
     if not modFullyInitialized then
+        -- Set goal-specific global variables based on goal type
+        if currentGoal == "shrine_seeker" and goalRequired > 0 then
+            console.ExecuteConsole("set APShrineVictoryGoal to " .. tostring(goalRequired))
+            writeLog("Set APShrineVictoryGoal to " .. tostring(goalRequired))
+        elseif currentGoal == "gatecloser" and goalRequired > 0 then
+            console.ExecuteConsole("set APGateVictoryGoal to " .. tostring(goalRequired))
+            writeLog("Set APGateVictoryGoal to " .. tostring(goalRequired))
+        end
+        
         -- Map goal values to display names
         local goalDisplayNames = {
             ["gatecloser"] = "Gatecloser",
@@ -854,6 +867,11 @@ local function handleInitialization()
         
         -- Show goal message
         local goalMessage = "Archipelago Initialization Complete!  Goal: " .. displayGoal
+        if goalRequired > 0 and (currentGoal == "shrine_seeker" or currentGoal == "gatecloser") then
+            goalMessage = goalMessage .. " (" .. tostring(goalRequired) .. ")"
+        end
+        
+        -- Show goal message
         local success = pcall(function()
             console.ExecuteConsole("MessageBox \"" .. goalMessage .. "\"")
         end)
@@ -1024,20 +1042,15 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     actualHudVM.Notification.ShowSeconds = 0.0001
                 end)
                 
-                -- Write completion status for Arena Grand Champion
-                writeCompletionStatus("APArenaGrandChampionVictory")
-                writeLog("Arena Grand Champion completed")
-                
                 -- Check if arena is the current goal and show completion message
                 if currentGoal == "arena" then
-                    local success = pcall(function()
+                    pcall(function()
                         console.ExecuteConsole("MessageBox \"Arena Goal Complete!\"")
                     end)
-                    if success then
-                        writeLog("Arena goal completion message displayed")
-                    else
-                        writeLog("Failed to display arena goal completion message", "ERROR")
-                    end
+                    
+                    -- Write Victory to completion file
+                    writeCompletionStatus("Victory")
+                    writeLog("Arena Victory written to completion file")
                 end
                 
                 return
@@ -1184,6 +1197,52 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 end
             end
             
+            -- Handle Dungeon "Check:" command
+            local messageMatch = text:match("^Message \"Check: (.+)\"$")
+            if messageMatch then
+                local dungeonName = messageMatch
+                local isSupported = false
+                
+                for _, dungeon in ipairs(config.supportedDungeons) do
+                    if dungeon == dungeonName then
+                        isSupported = true
+                        break
+                    end
+                end
+                
+                local response = isSupported and "Yes" or "No"
+                console.ExecuteConsole("MessageBox \"" .. response .. "\"")
+                writeLog("Dungeon check: " .. dungeonName .. " -> " .. response)
+                return
+            end
+            
+            -- Handle direct "Check:" command
+            local directCheckMatch = text:match("^Check: (.+)$")
+            if directCheckMatch then
+                -- Hide the player's message
+                local setShowSuccess, setShowResult = pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                
+                local dungeonName = directCheckMatch
+                local isSupported = false
+                
+                for _, dungeon in ipairs(config.supportedDungeons) do
+                    if dungeon == dungeonName then
+                        isSupported = true
+                        break
+                    end
+                end
+                
+                local response = isSupported and "Yes" or "No"
+                pcall(function()
+                    console.ExecuteConsole("Message \"" .. dungeonName .. ": " .. response .. "\"")
+                end)
+                writeLog("Dungeon check: " .. dungeonName .. " -> " .. response)
+                
+                return
+            end
+            
             -- Check for skill increase messages
             local skillName = text:match("Your (.+) skill has increased%.")
             if skillName then
@@ -1199,13 +1258,46 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
 
             -- Check for dungeon cleared messages
             if text == "Dungeon Cleared" then
+                writeCompletionStatus("Dungeon Cleared")
+                writeLog("Dungeon Cleared")
+                return
+            end
+            
+            -- Handle Shrine Seeker Victory message
+            if text == "Shrine Seeker Victory" then
                 -- Hide the notification
                 local setShowSuccess, setShowResult = pcall(function()
                     actualHudVM.Notification.ShowSeconds = 0.0001
                 end)
                 
-                writeCompletionStatus("Dungeon Cleared")
-                writeLog("Dungeon Cleared")
+                -- Write Victory to completion file
+                writeCompletionStatus("Victory")
+                writeLog("Shrine Seeker Victory written to completion file")
+                
+                -- Show victory messagebox
+                pcall(function()
+                    console.ExecuteConsole("MessageBox \"Shrine Seeker Goal Complete!\"")
+                end)
+                
+                return
+            end
+            
+            -- Handle Gatecloser Victory message
+            if text == "Gatecloser Victory" then
+                -- Hide the notification
+                local setShowSuccess, setShowResult = pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                
+                -- Write Victory to completion file
+                writeCompletionStatus("Victory")
+                writeLog("Gatecloser Victory written to completion file")
+                
+                -- Show victory messagebox
+                pcall(function()
+                    console.ExecuteConsole("MessageBox \"Gatecloser Goal Complete!\"")
+                end)
+                
                 return
             end
         end)
