@@ -9,7 +9,8 @@ A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/)
 MO2 now has support for ue4ss mods. To install with MO2, follow these steps:
 
 ##### 1. Install the Dev Branch of MO2:
-[This can be acquired on the MO2 Discord](https://discord.gg/Jjprnb5rDJ)
+This can be acquired on the [MO2 Discord](https://discord.gg/Jjprnb5rDJ)  
+[Direct link to version 2.5.3](https://discord.com/channels/265929299490635777/379225566122999808/1377090478515945524)
 
 ##### 2. [UE4SS for OblivionRemastered](https://www.nexusmods.com/oblivionremastered/mods/32) and [OBSE64](https://www.nexusmods.com/oblivionremastered/mods/282) both **need to be installed MANUALLY** -- They do not work as MO2 mods directly.
 
@@ -39,15 +40,20 @@ Oblivion Remastered
 - [NL Tag Remover](https://www.nexusmods.com/oblivionremastered/mods/473)
 
 ##### 4. [Download the latest release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest) and manually install (Right Click --> Install Mod) both the Archipelago.zip and ArchipelagoBridge.zip into MO2.  
-You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab -- be sure it is enabled.
+You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab.
 
-<img width="356" height="116" alt="image" src="https://github.com/user-attachments/assets/f229fcb9-4488-4022-aba7-108b0d37feae" />
-<img width="175" height="125" alt="image" src="https://github.com/user-attachments/assets/2ca5bb2c-17d6-4523-9234-ddbf1e86b21b" />
+
+<img width="331" height="186" alt="image" src="https://github.com/user-attachments/assets/9f5790b7-2973-4867-812c-64f3cbfd5769" />
+<img width="265" height="218" alt="image" src="https://github.com/user-attachments/assets/a753b271-43f8-4036-b9c2-6d5f263424d7" />
+<img width="300" height="600" alt="image" src="https://github.com/user-attachments/assets/624feb8e-01e8-411c-88e1-72545190134e" />  
+
+
+### Finally, with everything installed -- Please ensure the above -four- checkboxes are ticked.
 
 ## How to use
 
 > **Note**:
-> The mod is best experienced by loading a save from just before leaving the sewers, or you can start a new game.
+> In the latest version, it is recommended you start a new character for each playthrough.  
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
@@ -56,39 +62,13 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-Make sure to launch through using the obse64_loader, as seen here:
+Make sure to launch through using OBSE, as seen here:
 
-<img width="500" height="100" alt="image" src="https://github.com/user-attachments/assets/4816d8c9-f41a-4bd5-a5a3-9094593fa712" />
+<img width="615" height="200" alt="image" src="https://github.com/user-attachments/assets/242bc578-8b05-40e6-a0a0-4fca16e038e6" />
 
 
 ## Troubleshooting: 
 
-This is Oblivion, so we have some recovery options in the event of a crash, untimely death, or other issues.
-The best advice is to Quicksave(F5) any time you receive a new item from the multiworld.
-
-#### Resending Items
-
-You can use the console(~) to resend recent items. Type:
-
-```
-Message "Resend X"
-```
-where X is the number of items you need re-sent.
-You can check the bridge status file to see what items you have received.  
-It will look like this:
-```
-Item1,Item2,Item3,Item4,Item5
-```
-If you wanted to resend items 3 - 5, you would type:
-```
-Message "Resend 3"
-```
-NOTE: Progressive shop items are received in a set of 3, so if you received a Progressive Shop Stock, add 3 to the number you want to resend.
-
-If you need to do a full reset, you can type the following command in the console:
-
-```
-Message "APReset"
-```
-
-Then reconnect in the Oblivion Remastered Client. The game will receive all previous items and reinitialize world state.
+In the newest update, all Archipelago items will be automatically re-synced with you in the event of a death, crash, or other loss of state.
+The client will also warn you if you are disconnected, and handle recovery in a more graceful manner.
+In the event something is not running as you expect, please check `%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago`
