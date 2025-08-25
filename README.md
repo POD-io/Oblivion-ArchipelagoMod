@@ -43,8 +43,8 @@ Oblivion Remastered
 You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab.
 
 
-<img width="331" height="186" alt="image" src="https://github.com/user-attachments/assets/9f5790b7-2973-4867-812c-64f3cbfd5769" />
-<img width="265" height="218" alt="image" src="https://github.com/user-attachments/assets/a753b271-43f8-4036-b9c2-6d5f263424d7" />
+<img width="331" height="186" alt="image" src="https://github.com/user-attachments/assets/9f5790b7-2973-4867-812c-64f3cbfd5769" />  
+<img width="265" height="218" alt="image" src="https://github.com/user-attachments/assets/a753b271-43f8-4036-b9c2-6d5f263424d7" />  
 <img width="300" height="600" alt="image" src="https://github.com/user-attachments/assets/624feb8e-01e8-411c-88e1-72545190134e" />  
 
 
@@ -71,4 +71,4 @@ Make sure to launch through using OBSE, as seen here:
 
 In the newest update, all Archipelago items will be automatically re-synced with you in the event of a death, crash, or other loss of state.
 The client will also warn you if you are disconnected, and handle recovery in a more graceful manner.
-In the event something is not running as you expect, please check `%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago`
+In the event something is not running as you expect, please check `%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago\archipelago_debug.log`
