@@ -62,9 +62,9 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-### Make sure to launch through OBSE64, as seen here:
+### Make sure to launch through MO2 using the OBSE64 option, as seen here:
 
-<img width="615" height="200" alt="image" src="https://github.com/user-attachments/assets/242bc578-8b05-40e6-a0a0-4fca16e038e6" />
+<img width="602" height="187" alt="image" src="https://github.com/user-attachments/assets/d1ad2ea4-f559-409f-b628-7ea885d75649" />
 
 **If you do not see OBSE64** as an option, please try restarting MO2.
 
