@@ -43,8 +43,8 @@ Oblivion Remastered
 You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab.
 
 
-<img width="331" height="186" alt="image" src="https://github.com/user-attachments/assets/9f5790b7-2973-4867-812c-64f3cbfd5769" />  
-<img width="265" height="218" alt="image" src="https://github.com/user-attachments/assets/a753b271-43f8-4036-b9c2-6d5f263424d7" />  
+<img width="300" height="170" alt="image" src="https://github.com/user-attachments/assets/9f5790b7-2973-4867-812c-64f3cbfd5769" />  
+<img width="235" height="200" alt="image" src="https://github.com/user-attachments/assets/a753b271-43f8-4036-b9c2-6d5f263424d7" />  
 <img width="300" height="600" alt="image" src="https://github.com/user-attachments/assets/624feb8e-01e8-411c-88e1-72545190134e" />  
 
 
@@ -62,9 +62,11 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-Make sure to launch through using OBSE, as seen here:
+### Make sure to launch through OBSE64, as seen here:
 
 <img width="615" height="200" alt="image" src="https://github.com/user-attachments/assets/242bc578-8b05-40e6-a0a0-4fca16e038e6" />
+
+**If you do not see OBSE64** as an option, please try restarting MO2.
 
 
 ## Troubleshooting: 
