@@ -68,6 +68,10 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 
 **If you do not see OBSE64** as an option, please try restarting MO2.
 
+## How to confirm the mod is working as expected
+If everything is in order, you should see your Archipelago goal display in-game as a quest as soon as you finish creating your character.  
+Good luck!
+
 
 ## Troubleshooting: 
 
