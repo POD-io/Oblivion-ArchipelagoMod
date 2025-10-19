@@ -32,6 +32,28 @@ local archipelagoSettings = {
 -- Queue for displaying messages when multiple items are processed
 local messageboxQueue = {}
 
+-- Path + logging helpers
+local function getArchipelagoPath(filename)
+    return ARCHIPELAGO_BASE_DIR .. "\\" .. filename
+end
+
+local function writeLog(message, level)
+    level = level or "INFO"
+    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+    local logMessage = string.format("[%s] [%s] %s", timestamp, level, message)
+    local logPath = getArchipelagoPath("archipelago_debug.log")
+    local file = io.open(logPath, "a")
+    if file then
+        file:write(logMessage .. "\n")
+        file:close()
+    end
+end
+
+local function initializeLog()
+    os.execute('mkdir "' .. ARCHIPELAGO_BASE_DIR .. '" 2>nul')
+    writeLog("Archipelago Mod Initialized")
+end
+
 -- Session flags to track initialization status
 local progressiveShopStockInitialized = false
 local arenaInitialized = false
@@ -99,29 +121,6 @@ local classToIntegerMapping = {
 }
 
 
-local function getArchipelagoPath(filename)
-    return ARCHIPELAGO_BASE_DIR .. "\\" .. filename
-end
-
-
--- Logging function with timestamp and level support
-local function writeLog(message, level)
-    level = level or "INFO"
-    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-    local logMessage = string.format("[%s] [%s] %s", timestamp, level, message)
-    
-    local logPath = getArchipelagoPath("archipelago_debug.log")
-    local file = io.open(logPath, "a")
-    if file then
-        file:write(logMessage .. "\n")
-        file:close()
-    end
-end
-
-local function initializeLog()
-    os.execute('mkdir "' .. ARCHIPELAGO_BASE_DIR .. '" 2>nul')
-    writeLog("Archipelago Mod Initialized")
-end
 
 local function queueMessagebox(message)
     table.insert(messageboxQueue, message)
@@ -146,6 +145,8 @@ local apProbe = {
     console = nil,
     lastCount = 0,
     awaiting = false,
+    circularBufferMode = false,
+    circularBufferCheckCount = 0,
 }
 
 pcall(function()
@@ -157,20 +158,50 @@ end)
 local function apFindConsole()
     if apProbe.console and apProbe.console:IsValid() then return apProbe.console end
     local inst = FindFirstOf("Console")
-    if inst and inst:IsValid() then apProbe.console = inst end
+    if inst and inst:IsValid() then 
+        apProbe.console = inst
+    end
     return apProbe.console
 end
 
 local function apReadConsoleAndEmitCount()
-    local inst = apFindConsole(); if not inst then return end
+    local inst = apFindConsole()
+    if not inst then return end
+    
     local newCount = inst.OutputBufferSize
-    if apProbe.awaiting and newCount > apProbe.lastCount then
+    local bufferAtMax = newCount >= 1024
+    
+    if apProbe.awaiting then
         local value = nil
-        for i = apProbe.lastCount, newCount - 1 do
-            local line = inst.OutputBuffer[i+1]:ToString()
-            local v = line:match(">>%s*(%d+)") or line:match("^(%d+)$")
-            if v then value = v end
+        local startIdx, endIdx
+        
+        if apProbe.circularBufferMode and bufferAtMax and newCount == apProbe.lastCount then
+            apProbe.circularBufferCheckCount = apProbe.circularBufferCheckCount + 1
+            if apProbe.circularBufferCheckCount < 60 then
+                apProbe.lastCount = newCount
+                return
+            end
+            startIdx = math.max(0, newCount - 20)
+            endIdx = newCount - 1
+        elseif newCount > apProbe.lastCount then
+            startIdx = apProbe.lastCount
+            endIdx = newCount - 1
+        else
+            apProbe.lastCount = newCount
+            return
         end
+        
+        for i = startIdx, endIdx do
+            local line = inst.OutputBuffer[i+1]:ToString()
+            local v = line:match(">>%s*(%d+%.?%d*)") or line:match("^(%d+%.?%d*)$")
+            if v then 
+                local numValue = tonumber(v)
+                if numValue then
+                    value = tostring(math.floor(numValue))
+                end
+            end
+        end
+        
     if value then
             if not probeFinished then
                 local ingameCount = tonumber(value) or 0
@@ -187,6 +218,7 @@ local function apReadConsoleAndEmitCount()
                             console.ExecuteConsole("Message \"APSync: requesting resend of " .. tostring(removed) .. " items\"")
                         end)
                         probeFinished = true
+                        probeAttemptCount = 0  -- Reset attempt counter on successful completion
                     elseif diff > 20 then
                         pcall(function()
                             console.ExecuteConsole("set APSyncRequest to 1")
@@ -194,6 +226,7 @@ local function apReadConsoleAndEmitCount()
                         -- wait for APPROVED/DENIED before marking handled
                     else
                         probeFinished = true
+                        probeAttemptCount = 0  -- Reset attempt counter on successful completion
                     end
                 end
             end
@@ -201,6 +234,8 @@ local function apReadConsoleAndEmitCount()
                 console.ExecuteConsole('Message "AP_SYNC COUNT ' .. tostring(value) .. '"')
             end)
             apProbe.awaiting = false
+            apProbe.circularBufferMode = false
+            apProbe.circularBufferCheckCount = 0
         end
     end
     apProbe.lastCount = newCount
@@ -208,18 +243,39 @@ end
 
 local function startAPSyncProbe()
     apFindConsole()
+    local currentBufferSize = apProbe.console and apProbe.console.OutputBufferSize or 0
+    
+    if currentBufferSize >= 1024 then
+        apProbe.circularBufferMode = true
+        apProbe.circularBufferCheckCount = 0
+    else
+        apProbe.circularBufferMode = false
+    end
+    
     apProbe.awaiting = true
-    apProbe.lastCount = apProbe.console and apProbe.console.OutputBufferSize or 0
-    pcall(function()
+    apProbe.lastCount = currentBufferSize
+    probeFinished = false
+    probeAttemptCount = 0
+    probeStuckMessageShown = false
+    
+    local success, err = pcall(function()
         console.ExecuteConsole('GetGS "Start {ID:APSYNC}"')
         console.ExecuteConsole('GetGlobalValue APAppliedCount')
         console.ExecuteConsole('GetGS "End"')
     end)
+    
+    if not success then
+        writeLog("Probe failed to execute console commands: " .. tostring(err), "ERROR")
+        apProbe.awaiting = false
+    end
 end
 
 
 -- Sync tracking and helpers
 local probeFinished = false
+local probeAttemptCount = 0
+local probeStuckMessageShown = false
+
 
 -- Initialization probe and reinit confirmation state
 local reinitPending = false
@@ -649,15 +705,23 @@ local function processItemEvents()
             local eventType, itemName, target = line:match("^([^|]+)|([^|]+)|(.+)$")
             if eventType and itemName and target then
                 local message = ""
-                
                 if eventType == "found" then
-                    message = "You found your " .. itemName .. " at " .. target
+                    message = "You found your " .. itemName .. " (" .. target .. ")"
                 elseif eventType == "sent" then
-                    message = "You sent '" .. itemName .. "' to '" .. target .. "'"
+                    local player, location = target:match("^(.-)|(.*)$")
+                    if player and location and location ~= "" then
+                        message = "You sent '" .. itemName .. "' to '" .. player .. "' (" .. location .. ")"
+                    else
+                        message = "You sent '" .. itemName .. "' to '" .. target .. "'"
+                    end
                 elseif eventType == "received" then
-                    message = target .. " found your " .. itemName
+                    local player, location = target:match("^(.-)|(.*)$")
+                    if player and location and location ~= "" then
+                        message = player .. " found your " .. itemName .. " (" .. location .. ")"
+                    else
+                        message = target .. " found your " .. itemName
+                    end
                 end
-                
                 if message ~= "" then
                     -- Use the tutorial display area
                     ShowArchipelagoNotification(message)
@@ -675,13 +739,16 @@ end
 -- We must ignore these in the completion hook to avoid false positives (e.g., skill increases)
 local function isAPItemEventNotification(text)
     if not text or text == "" then return false end
-    -- Exact formats emitted by processItemEvents when routed via console 'Message'
-    -- 1) You found your <item> at <target>
-    if text:match("^You found your .- at .-$") then return true end
-    -- 2) You sent '<item>' to '<target>'
+    -- You found your <item> (<location>)
+    if text:match("^You found your .- %(.+%)$") then return true end
+    -- You sent '<item>' to '<player>' (no location)
     if text:match("^You sent%s*'.-'%s*to%s*'.-'$") then return true end
-    -- 3) <someone> found your <item>
+    -- You sent '<item>' to '<player>' (<location>)
+    if text:match("^You sent%s*'.-'%s*to%s*'.-'%s*%(.+%)$") then return true end
+    -- <player> found your <item> (no location)
     if text:match("^.+%s+found your%s+.-$") then return true end
+    -- <player> found your <item> (<location>)
+    if text:match("^.+%s+found your%s+.-%s*%(.+%)$") then return true end
     return false
 end
 
@@ -874,13 +941,17 @@ local function initializeArena()
     end
     
     local initialized = false
+    local fastArenaEnabled = false
     
-    -- Check if already initialized
+    -- Check if already initialized and read fast_arena setting
     for line in file:lines() do
         local key, value = line:match("^(.-)=(.*)$")
-        if key and value and key == "arena_initialized" and value == "True" then
-            initialized = true
-            break
+        if key and value then
+            if key == "arena_initialized" and value == "True" then
+                initialized = true
+            elseif key == "fast_arena" and value == "true" then
+                fastArenaEnabled = true
+            end
         end
     end
     file:close()
@@ -892,6 +963,12 @@ local function initializeArena()
     -- Set APArenaRank to 0 to block arena progression until unlocks are received
     console.ExecuteConsole("set APArenaRank to 0")
     writeLog("Arena initialization complete - APArenaRank set to 0")
+    
+    -- Set APFastArena to 1 if fast arena mode is enabled
+    if fastArenaEnabled then
+        console.ExecuteConsole("set APFastArena to 1")
+        writeLog("Set APFastArena to 1 - fast arena mode enabled")
+    end
     
     -- Mark as initialized
     file = io.open(settingsPath, "a")
@@ -1314,6 +1391,13 @@ local function getSelectedRegions()
     return regions
 end
 
+local function areRegionsDisabled()
+    -- Region gating considered disabled if settings define no selected regions
+    local regions = getSelectedRegions()
+    if #regions == 0 then return true end
+    return false
+end
+
 -- Prevent dungeon cleared completions for locked dungeons
 local function isRegionUnlockedViaReceipts(regionName)
     local filePrefix = getCurrentFilePrefix()
@@ -1522,26 +1606,37 @@ local function processItemQueue()
         -- Handle Region Access items (e.g., "West Weald Access"): reveal only selected dungeons' markers
         local regionAccess = itemName:match("^(.*) Access$")
         if regionAccess then
-            writeLog("Processing Region Access: " .. regionAccess)
-            -- Reveal selected dungeon markers for this region
-            local count = revealDungeonMarkersForRegion(regionAccess)
-            if count == 0 then
-                writeLog("Region Access had no markers to reveal for '" .. regionAccess .. "'", "WARNING")
-            end
-
-            -- Set Region Unlocked global
-            -- Example: "Blackwood" -> set APBlackwoodUnlocked to 1
-            local regionVar = "AP" .. regionAccess:gsub("%W", "") .. "Unlocked"
-            local ok, err = pcall(function()
-                console.ExecuteConsole("set " .. regionVar .. " to 1")
-            end)
-            if ok then
-                writeLog("Set " .. regionVar .. " to 1")
+            if regionAccess == "Paradise" then
+                writeLog("Processing Paradise Access")
+                local okAccess, errAccess = pcall(function()
+                    console.ExecuteConsole("set APParadiseAccess to 1")
+                end)
+                if not okAccess then
+                    writeLog("Failed to set APParadiseAccess: " .. tostring(errAccess), "ERROR")
+                end
+                table.insert(processedItems, itemName)
             else
-                writeLog("Failed to set " .. regionVar .. ": " .. tostring(err), "ERROR")
-            end
+                writeLog("Processing Region Access: " .. regionAccess)
+                -- Reveal selected dungeon markers for this region
+                local count = revealDungeonMarkersForRegion(regionAccess)
+                if count == 0 then
+                    writeLog("Region Access had no markers to reveal for '" .. regionAccess .. "'", "WARNING")
+                end
 
-            table.insert(processedItems, itemName)
+                -- Set Region Unlocked global
+                -- Example: "Blackwood" -> set APBlackwoodUnlocked to 1
+                local regionVar = "AP" .. regionAccess:gsub("%W", "") .. "Unlocked"
+                local ok, err = pcall(function()
+                    console.ExecuteConsole("set " .. regionVar .. " to 1")
+                end)
+                if ok then
+                    writeLog("Set " .. regionVar .. " to 1")
+                else
+                    writeLog("Failed to set " .. regionVar .. ": " .. tostring(err), "ERROR")
+                end
+
+                table.insert(processedItems, itemName)
+            end
         
         -- Handle shop check items - add to merchant chests
         elseif itemName:match("^APShopCheckValue%d+$") then
@@ -1558,27 +1653,9 @@ local function processItemQueue()
             end
             writeLog("Successfully added " .. itemName .. " to all merchant chests")
             
-            -- Check if this is the final shop check value in the queue
-            local currentValue = tonumber(itemName:match("APShopCheckValue(%d+)"))
-            local isFinalShopCheck = true
-            
-            -- Look ahead in the queue to see if there are higher value shop check items
-            for i = #itemsToProcess, 1, -1 do
-                local futureItem = itemsToProcess[i]
-                if futureItem:match("^APShopCheckValue%d+$") then
-                    local futureValue = tonumber(futureItem:match("APShopCheckValue(%d+)"))
-                    if futureValue and futureValue > currentValue then
-                        isFinalShopCheck = false
-                        break
-                    end
-                end
-            end
-            
-            -- Show message for final shop check value
-            if isFinalShopCheck then
-                local randomMessage = config.shopStockMessages[math.random(1, #config.shopStockMessages)]
-                queueMessagebox(randomMessage)
-            end
+            -- Set flag for in-game quest to detect new shop stock
+            console.ExecuteConsole("set APNewShopStock to 1")
+            writeLog("Set APNewShopStock to 1 - in-game quest will notify player of new stock")
             
             table.insert(processedItems, itemName)
         -- Handle Oblivion Gate Vision - set console variable
@@ -1590,11 +1667,6 @@ local function processItemQueue()
             
             if success then
                 writeLog("Successfully set APGateMarkersVisible to 1")
-                
-                -- Show gate vision message
-                local randomMessage = config.gateVisionMessages[math.random(1, #config.gateVisionMessages)]
-                queueMessagebox(randomMessage)
-                
                 table.insert(processedItems, itemName)
             else
                 writeLog("Failed to set APGateMarkersVisible: " .. tostring(result), "ERROR")
@@ -1612,26 +1684,9 @@ local function processItemQueue()
                 if success then
                     writeLog("Added Arena unlock item: " .. itemName)
                     
-                    -- Check if this is the first arena unlock item in the queue
-                    local isFirstArenaUnlock = true
-                    for i = 1, #itemsToProcess do
-                        if itemsToProcess[i]:match("^APArena.*Unlock$") and itemsToProcess[i] ~= itemName then
-                            isFirstArenaUnlock = false
-                            break
-                        elseif itemsToProcess[i] == itemName then
-                            break
-                        end
-                    end
-                    
-                    -- Show arena unlock message only once
-                    if isFirstArenaUnlock then
-                        if itemName == "APArenaPitDogUnlock" then
-                            queueMessagebox("The gates of the Arena are now open to you.")
-                        else
-                            local randomMessage = config.arenaMessages[math.random(1, #config.arenaMessages)]
-                            queueMessagebox(randomMessage)
-                        end
-                    end
+                    -- Set flag for in-game quest to detect new arena matches
+                    console.ExecuteConsole("set APNewArenaMatches to 1")
+                    writeLog("Set APNewArenaMatches to 1 - in-game quest will notify player of new matches")
                     
                     table.insert(processedItems, itemName)
                 else
@@ -1727,6 +1782,85 @@ local function processItemQueue()
                 table.insert(processedItems, itemName)
             else
                 writeLog("Failed to grant Horse: " .. tostring(result), "ERROR")
+            end
+        -- Handle Dagon Shrine Passphrase: set known flag
+        elseif itemName == "Dagon Shrine Passphrase" then
+            writeLog("Processing Dagon Shrine Passphrase - setting APDagonShrinePassphraseKnown to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APDagonShrinePassphraseKnown to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APDagonShrinePassphraseKnown: " .. tostring(err), "ERROR") end
+        -- Handle Encrypted Scroll of the Blades: set Global flag
+        elseif itemName == "Encrypted Scroll of the Blades" then
+            writeLog("Processing Encrypted Scroll of the Blades - setting APEncryptedScrolloftheBlades to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APEncryptedScrolloftheBlades to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APEncryptedScrolloftheBlades: " .. tostring(err), "ERROR") end
+        elseif itemName == "Blades' Report: Strangers at Dusk" then
+            writeLog("Processing Blades' Report: Strangers at Dusk - setting APStrangersAtDusk to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APStrangersAtDusk to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APStrangersAtDusk: " .. tostring(err), "ERROR") end
+        -- Handle Decoded Page of the Xarxes: set corresponding Global flag
+        elseif itemName == "Decoded Page of the Xarxes: Divine" then
+            writeLog("Processing Decoded Page of the Xarxes: Divine - setting APDecodedPageoftheXarxesDivine to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APDecodedPageoftheXarxesDivine to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APDecodedPageoftheXarxesDivine: " .. tostring(err), "ERROR") end
+        elseif itemName == "Decoded Page of the Xarxes: Daedric" then
+            writeLog("Processing Decoded Page of the Xarxes: Daedric - setting APDecodedPageoftheXarxesDaedric to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APDecodedPageoftheXarxesDaedric to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APDecodedPageoftheXarxesDaedric: " .. tostring(err), "ERROR") end
+        elseif itemName == "Decoded Page of the Xarxes: Ayleid" then
+            writeLog("Processing Decoded Page of the Xarxes: Ayleid - setting APDecodedPageoftheXarxesAyleid to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APDecodedPageoftheXarxesAyleid to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APDecodedPageoftheXarxesAyleid: " .. tostring(err), "ERROR") end
+          elseif itemName == "Decoded Page of the Xarxes: Sigillum" then
+            writeLog("Processing Decoded Page of the Xarxes: Sigillum - setting APDecodedPageoftheXarxesSigillum to 1")
+            local ok, err = pcall(function() console.ExecuteConsole("set APDecodedPageoftheXarxesSigillum to 1") end)
+            if ok then table.insert(processedItems, itemName) else writeLog("Failed to set APDecodedPageoftheXarxesSigillum: " .. tostring(err), "ERROR") end
+        -- Handle Amulet of Kings key item
+        elseif itemName == "Amulet of Kings" then
+            writeLog("Processing Amulet of Kings - adding AmuletofKings to player inventory")
+            local success, result = pcall(function()
+                console.ExecuteConsole("player.additem AmuletofKings 1")
+            end)
+            if success then
+                writeLog("Added Amulet of Kings (AmuletofKings)")
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to add Amulet of Kings: " .. tostring(result), "ERROR")
+            end
+        -- Handle Kvatch Gate Key item: add APKvatchGateKey to inventory
+        elseif itemName == "Kvatch Gate Key" then
+            writeLog("Processing Kvatch Gate Key - adding APKvatchGateKey to player inventory")
+            local success, result = pcall(function()
+                console.ExecuteConsole("player.additem APKvatchGateKey 1")
+            end)
+            if success then
+                writeLog("Added Kvatch Gate Key (APKvatchGateKey)")
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to add Kvatch Gate Key: " .. tostring(result), "ERROR")
+            end
+        -- Handle Fort Sutch Gate Key item: add APFortSutchGateKey to inventory
+        elseif itemName == "Fort Sutch Gate Key" then
+            writeLog("Processing Fort Sutch Gate Key - adding APFortSutchGateKey to player inventory")
+            local success, result = pcall(function()
+                console.ExecuteConsole("player.additem APFortSutchGateKey 1")
+            end)
+            if success then
+                writeLog("Added Fort Sutch Gate Key (APFortSutchGateKey)")
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to add Fort Sutch Gate Key: " .. tostring(result), "ERROR")
+            end
+        -- Handle Bruma Gate Key item: add APBrumaGateKey to inventory
+        elseif itemName == "Bruma Gate Key" then
+            writeLog("Processing Bruma Gate Key - adding APBrumaGateKey to player inventory")
+            local success, result = pcall(function()
+                console.ExecuteConsole("player.additem APBrumaGateKey 1")
+            end)
+            if success then
+                writeLog("Added Bruma Gate Key (APBrumaGateKey)")
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to add Bruma Gate Key: " .. tostring(result), "ERROR")
             end
         -- Handle Fortify Attribute items: set global flags for in-game processing
         elseif itemName:match("^Fortify .+") then
@@ -2022,6 +2156,8 @@ function handleInitialization()
                 console.ExecuteConsole("set APGoal to 3")
             elseif currentGoal == "dungeon_delver" then
                 console.ExecuteConsole("set APGoal to 4")
+            elseif currentGoal == "light_the_dragonfires" then
+                console.ExecuteConsole("set APGoal to 5")
             end
         end)
         
@@ -2083,8 +2219,18 @@ local function handlePeriodicProcessing()
                 if hasItems then
                     -- Gate item processing until APsync has completed
                     if not probeFinished then
-                        writeLog("Delaying item processing until APsync completes")
+                        probeAttemptCount = probeAttemptCount + 1
+                        writeLog("Delaying item processing until APsync completes (attempt " .. probeAttemptCount .. "/3)")
+                        
+                        if probeAttemptCount >= 3 and not probeStuckMessageShown then
+                            writeLog("APsync probe failed after 3 attempts - queue blocked, cannot verify sync state", "ERROR")
+                            pcall(function()
+                                console.ExecuteConsole('Message "APSync Probe stuck - item queue blocked. Check log file."')
+                            end)
+                            probeStuckMessageShown = true
+                        end
                     else
+                        probeAttemptCount = 0
                         processItemQueue()
                     end
                 end
@@ -2123,6 +2269,7 @@ local allowAPSync = false
 RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", function()
     -- Reset probe state for this load
     probeFinished = false
+    probeAttemptCount = 0  -- Reset attempt counter on each load
     if not gameStarted then
         writeLog("Game fade-in detected")
         gameStarted = true
@@ -2246,10 +2393,18 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
             if not textSuccess then
                 return
             end
+
+            -- Shorten vanilla inventory add notifications
+            if text:match('^%d+ .- added to the player\'s inventory$')
+               and not text:match('^%d+ AP .- Completion Token added to the player\'s inventory$') then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 1.5
+                end)
+                return
+            end
             
             -- intercept our probe command and fetch APAppliedCount
             if text == 'ConsoleCommand Message AP_SYNC COUNT ((GetGlobalValue APAppliedCount))' then
-                -- Ignore if already handled or in-flight
                 if not probeFinished and not apProbe.awaiting then
                     startAPSyncProbe()
                 end
@@ -2317,10 +2472,11 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     end
                     -- in-game has more than disk; block this load
                     if ingameCount > diskCount then
+                        writeLog("Save has " .. tostring(ingameCount) .. " items but AP session only has " .. tostring(diskCount) .. " - load correct save or reconnect client", "ERROR")
                         pcall(function()
                             console.ExecuteConsole("MessageBox \"This save has more Archipelago items than your current AP session. Load a matching save, or connect the client to this save's slot/seed.\"")
                         end)
-                        -- Keep probeFinished=false to block processing for this load
+                        probeFinished = true  -- Probe completed successfully; user has been warned
                         return
                     end
                     if diff > 0 and diff <= 20 then
@@ -2329,6 +2485,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                             console.ExecuteConsole("Message \"APSync: requesting resend of " .. tostring(removed) .. " items\"")
                         end)
                         probeFinished = true
+                        probeAttemptCount = 0  -- Reset attempt counter
                         return
                     elseif diff > 20 then
                         pcall(function()
@@ -2337,6 +2494,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         return
                     else
                         probeFinished = true
+                        probeAttemptCount = 0  -- Reset attempt counter
                         return
                     end
                 end
@@ -2356,6 +2514,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     end
                     actualHudVM.Notification.ShowSeconds = 0.0001
                     probeFinished = true
+                    probeAttemptCount = 0  -- Reset attempt counter
                     return
                 end
 
@@ -2363,6 +2522,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     actualHudVM.Notification.ShowSeconds = 0.0001
                     writeLog("AP sync large resend denied by player")
                     probeFinished = true
+                    probeAttemptCount = 0  -- Reset attempt counter
                     return
                 end
 
@@ -2379,6 +2539,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     reinitPending = false
                     -- Ensure probe completes so item processing can proceed
                     probeFinished = true
+                    probeAttemptCount = 0  -- Reset attempt counter
                     -- Suppression for this save is persisted by the in-game script via APDisabled=1
                     return
                 end
@@ -2394,8 +2555,9 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 return
             end
             
-            -- Handle quest completion notifications
-            local completionMatch = text:match("AP (.+) Completion Token added to the player's inventory")
+            -- Handle quest/shrine completion notifications
+            local completionMatch = text:match("^%d+ AP (.+) Completion Token added to the player's inventory$")
+                                   or text:match("^AP (.+) Completion Token added to the player's inventory$")
             if completionMatch then
                 -- Hide the completion notification
                 local setShowSuccess, setShowResult = pcall(function()
@@ -2601,6 +2763,30 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 writeLog("Ayleid Well Visited")
                 return
             end
+
+            -- Birth Stones (Doomstones): "<Name> Doomstone Visited"
+            do
+                local baseName = text:match('^(.+) Doomstone Visited$')
+                if baseName then
+                    pcall(function()
+                        actualHudVM.Notification.ShowSeconds = 0.0001
+                    end)
+                    local stoneKey = baseName .. " Stone" -- config key
+                    local region = (config.doomstoneRegions or {})[stoneKey]
+                    if region then
+                        if areRegionsDisabled() or isRegionUnlockedViaReceipts(region) then
+                            local completionMessage = text -- write exactly what we read
+                            writeCompletionStatus(completionMessage)
+                            writeLog('Birthsign Stone visited (accepted): ' .. text .. ' -> completion="' .. completionMessage .. '" (Region: ' .. region .. ')')
+                        else
+                            writeLog('Birthsign Stone visit ignored (region locked): ' .. baseName .. ' (Region: ' .. region .. ')', 'DEBUG')
+                        end
+                    else
+                        writeLog('Birthsign Stone visit unrecognized: ' .. baseName, 'WARNING')
+                    end
+                    return
+                end
+            end
             
             -- Handle Shrine Seeker Victory message
             if text == "Shrine Seeker Victory" then
@@ -2630,6 +2816,217 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 return
             end
 
+            -- Main Quest Milestones
+            if text == "Deliver the Amulet" then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                writeCompletionStatus("Deliver the Amulet")
+                writeLog("Deliver the Amulet milestone recorded")
+                return
+            end
+            if text == "Breaking the Siege of Kvatch: Gate Closed" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Breaking the Siege of Kvatch: Gate Closed")
+                writeLog("Breaking the Siege of Kvatch: Gate Closed milestone recorded")
+                return
+            end
+            if text == "Breaking the Siege of Kvatch" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Breaking the Siege of Kvatch")
+                writeLog("Breaking the Siege of Kvatch milestone recorded")
+                return
+            end
+
+            if text == "Battle for Castle Kvatch" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Battle for Castle Kvatch")
+                writeLog("Battle for Castle Kvatch milestone recorded")
+                return
+            end
+
+            -- MQ05 checks
+            if text == "Acquire Commentaries Vol I" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("The Path of Dawn: Acquire Commentaries Vol I")
+                writeLog("Acquire Commentaries Vol I recorded")
+                return
+            end
+            if text == "Acquire Commentaries Vol II" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("The Path of Dawn: Acquire Commentaries Vol II")
+                writeLog("Acquire Commentaries Vol II recorded")
+                return
+            end
+            if text == "Acquire Commentaries Vol III" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("The Path of Dawn: Acquire Commentaries Vol III")
+                writeLog("Acquire Commentaries Vol III recorded")
+                return
+            end
+            if text == "Acquire Commentaries Vol IV" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("The Path of Dawn: Acquire Commentaries Vol IV")
+                writeLog("Acquire Commentaries Vol IV recorded")
+                return
+            end
+            if text == "The Path of Dawn" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("The Path of Dawn")
+                writeLog("The Path of Dawn recorded")
+                return
+            end
+
+            -- Dagon Shrine
+            if text == "Dagon Shrine" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Dagon Shrine")
+                writeLog("Dagon Shrine completion recorded")
+                return
+            end
+            if text == "Dagon Shrine: Mysterium Xarxes Acquired" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Dagon Shrine: Mysterium Xarxes Acquired")
+                writeLog("Dagon Shrine: Mysterium Xarxes Acquired recorded")
+                return
+            end
+            if text == "Harrow is dead" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Dagon Shrine: Kill Harrow")
+                writeLog("Kill Harrow recorded")
+                return
+            end
+            if text == "Jearl is dead" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Spies: Kill Jearl")
+                writeLog("Kill Jearl recorded")
+                return
+            end
+            if text == "Saveri Faram is dead" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Spies: Kill Saveri Faram")
+                writeLog("Kill Saveri Faram recorded")
+                return
+            end
+
+            if text == "Find the Heir" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Find the Heir")
+                writeLog("Find the Heir milestone recorded")
+                return
+            end
+            if text == "Weynon Priory" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Weynon Priory")
+                writeLog("Weynon Priory milestone recorded")
+                return
+            end
+
+            -- Additional Main Quest / Related Milestones
+            if text == "Spies" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Spies")
+                writeLog("Spies milestone recorded")
+                return
+            end
+            if text == "Blood of the Daedra" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Daedra")
+                writeLog("Blood of the Daedra milestone recorded")
+                return
+            end
+            if text == "Blood of the Divines" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines")
+                writeLog("Blood of the Divines milestone recorded")
+                return
+            end
+            -- Blood of the Divines Sub-steps
+            if text == "Blood of the Divines: Free Spirit 1" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines: Free Spirit 1")
+                writeLog("Blood of the Divines: Free Spirit 1 recorded")
+                return
+            end
+            if text == "Blood of the Divines: Free Spirit 2" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines: Free Spirit 2")
+                writeLog("Blood of the Divines: Free Spirit 2 recorded")
+                return
+            end
+            if text == "Blood of the Divines: Free Spirit 3" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines: Free Spirit 3")
+                writeLog("Blood of the Divines: Free Spirit 3 recorded")
+                return
+            end
+            if text == "Blood of the Divines: Free Spirit 4" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines: Free Spirit 4")
+                writeLog("Blood of the Divines: Free Spirit 4 recorded")
+                return
+            end
+            if text == "Blood of the Divines: Armor of Tiber Septim" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Blood of the Divines: Armor of Tiber Septim")
+                writeLog("Blood of the Divines: Armor of Tiber Septim recorded")
+                return
+            end
+            if text == "Bruma Gate" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Bruma Gate")
+                writeLog("Bruma Gate milestone recorded")
+                return
+            end
+            if text == "Miscarcand: Great Welkynd Stone" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Miscarcand: Great Welkynd Stone")
+                writeLog("Miscarcand: Great Welkynd Stone milestone recorded")
+                return
+            end
+            if text == "Miscarcand" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Miscarcand")
+                writeLog("Miscarcand milestone recorded")
+                return
+            end
+            if text == "Defense of Bruma" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Defense of Bruma")
+                writeLog("Defense of Bruma milestone recorded")
+                return
+            end
+            if text == "Great Gate" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Great Gate")
+                writeLog("Great Gate milestone recorded")
+                return
+            end
+            if text == "Paradise" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Paradise")
+                writeLog("Paradise milestone recorded")
+                return
+            end
+            if text == "Paradise: Bands of the Chosen Acquired" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Paradise: Bands of the Chosen Acquired")
+                writeLog("Paradise: Bands of the Chosen Acquired recorded")
+                return
+            end
+            if text == "Paradise: Bands of the Chosen Removed" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Paradise: Bands of the Chosen Removed")
+                writeLog("Paradise: Bands of the Chosen Removed recorded")
+                return
+            end
+            if text == "Attack on Fort Sutch" then
+                pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
+                writeCompletionStatus("Attack on Fort Sutch")
+                writeLog("Attack on Fort Sutch milestone recorded")
+                return
+            end
+
             -- Handle Dungeon Delver Victory message
             if text == "Dungeon Delver Victory" then
                 -- Hide the notification
@@ -2641,6 +3038,17 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 writeCompletionStatus("Victory")
                 writeLog("Dungeon Delver Victory written to completion file")
 
+                return
+            end
+
+            -- Handle Light the Dragonfires Victory message (Main Quest completion)
+            if text == "Light the Dragonfires Victory" then
+                -- Hide notification quickly
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                writeCompletionStatus("Victory")
+                writeLog("Light the Dragonfires Victory written to completion file")
                 return
             end
         end)

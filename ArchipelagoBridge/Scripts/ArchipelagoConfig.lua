@@ -173,6 +173,23 @@ local config = {
         "GottshawInnForochChest",
         "WawnetVendorChest"
     },
+
+    -- Birthsign (Doomstone) region mapping for region-gated completion validation
+    doomstoneRegions = {
+        ["Tower Stone"] = "Heartlands",
+        ["Steed Stone"] = "Heartlands",
+        ["Warrior Stone"] = "West Weald",
+        ["Apprentice Stone"] = "West Weald",
+        ["Atronach Stone"] = "Colovian Highlands",
+        ["Lord Stone"] = "Colovian Highlands",
+        ["Lady Stone"] = "Gold Coast",
+        ["Thief Stone"] = "Great Forest",
+        ["Shadow Stone"] = "Nibenay Basin",
+        ["Mage Stone"] = "Nibenay Basin",
+        ["Lover Stone"] = "Nibenay Valley",
+        ["Ritual Stone"] = "Blackwood",
+        ["Serpent Stone"] = "Blackwood",
+    },
     
     -- Shrine offering mappings for free offerings mode
     -- When a shrine token is received, these items are automatically added to help with shrine quests
@@ -210,34 +227,6 @@ local config = {
         ["Vaermina"] = "APVaerminaLocked"
     },
     
-    -- Gate vision messages
-    gateVisionMessages = {
-        "The Sight awakens. All Oblivion Gates are revealed to you.",
-        "You can now see every Oblivion Gate scorched across Tamriel.",
-        "The fires of Oblivion spread through the land, and you know where they burn."
-    },
-    
-    -- Shop stock messages
-    shopStockMessages = {
-        "New items have arrived at the inn, sent from distant shores.",
-        "The innkeeper's stock has grown - goods traded from another realm.",
-        "Supplies from far-off lands are now for sale at the inn."
-    },
-    
-    -- Arena unlock messages
-    arenaMessages = {
-        "Your reputation grows. More challengers await you in the Arena.",
-        "You may now compete in higher ranked Arena battles.",
-        "The Arena beckons - new matches have been unlocked.",
-        "You are now eligible for more Arena battles.",
-        "The next tier of Arena combatants await you.",
-        "You can now take on stronger Arena challengers.",
-        "Additional Arena matches are now unlocked.",
-        "Arena access expanded. New fights unlocked."
-    },
-    
-    
-
     -- Mapping from dungeon names to their ShowMap marker IDs
     dungeonMapMarkers = {
         ["Amelion Tomb"] = "AmelionTombMapmarker",
@@ -266,6 +255,7 @@ local config = {
         ["Fort Rayles"] = "FortRaylesMapmarker",
         ["Fort Wariel"] = "FortWarielMapmarker",
         ["Hrotanda Vale"] = "HrotandaValeMapmarker",
+        ["Lindai"] = "LindaiMapMarker",
         ["Lipsand Tarn"] = "LipsandTarnMapmarker",
         ["Nonungalo"] = "NonungaloMapmarker",
         ["Rock Bottom Caverns"] = "RockBottomCavernsMapmarker",
@@ -324,7 +314,6 @@ local config = {
         ["Vilverin"] = "VilverinMapmarker01",
         ["Capstone Cave"] = "CapstoneCaveMapmarker",
         ["Fort Horunn"] = "FortHorunnMapmarker",
-        ["Gutted Mine"] = "GuttedMineMapmarker",
         ["Ninendava"] = "NinendavaMapmarker",
         ["Rielle"] = "RielleMapmarker",
         ["Silver Tooth Cave"] = "SilverToothCaveMapmarker",
