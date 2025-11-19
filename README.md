@@ -6,40 +6,23 @@ A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/)
 
 ## Mod Manager Installation
 
-MO2 now has support for ue4ss mods. To install with MO2, follow these steps:
-
 ##### 1. Install the Dev Branch of MO2:
 This can be acquired on the [MO2 Discord](https://discord.gg/Jjprnb5rDJ)  
 [Direct link to version 2.5.3](https://discord.com/channels/265929299490635777/379225566122999808/1377090478515945524)
 
-##### 2. [UE4SS for OblivionRemastered](https://www.nexusmods.com/oblivionremastered/mods/32) and [OBSE64](https://www.nexusmods.com/oblivionremastered/mods/282) both **need to be installed MANUALLY** -- They do not work as MO2 mods directly.
+##### 2. Install UE4SS and OBSE64 files:
 
-> **Note:**  
-For the **UE4SS mod**, do not install the included dwmapi.dll file.  
-For the **OBSE64 mod**, you only need the obse64_xxx_xxx.dll and obse64_loader.exe files.
+Download OblivionRemastered_UE4SS_OBSE64.zip from the [Releases](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases) page.<br>
+Extract the OblivionRemastered folder from the ZIP into your Oblivion Remastered game folder. Instructions are included in the .zip
 
-Your folder should look like this:
-```
-Oblivion Remastered
-|--OblivionRemastered
-|--|--Binaries
-|--|--|--Win64
-|--|--|--|--UE4SS
-|--|--|--|--obse64__xxx_xxx.dll
-|--|--|--|--obse64_loader.exe
-```
-
-<img width="332" height="216" alt="image" src="https://github.com/user-attachments/assets/3c92122c-6725-4e32-97b7-29553064135d" />
-
-
-##### 3. Install the following mods into your mod manager:  
+##### 3. Install the following mods into MO2:  
 
 - [OBSE64 ue4ss Loader](https://www.nexusmods.com/oblivionremastered/mods/3421)  
 - [Runtime EditorIDs](https://www.nexusmods.com/oblivionremastered/mods/1331)  
 - [Address Library for OBSE Plugins](https://www.nexusmods.com/oblivionremastered/mods/4475)  
 - [NL Tag Remover](https://www.nexusmods.com/oblivionremastered/mods/473)
 
-##### 4. [Download the latest release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest) and manually install (Right Click --> Install Mod) both the Archipelago.zip and ArchipelagoBridge.zip into MO2.  
+##### 4. Download Archipelago.zip and ArchipelagoBridge.zip from the [latest release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest) and manually install (Right Click --> Install Mod) both into MO2.  
 You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the **Archipelago_Oblivion.esp** mod under the Plugins tab.
 
 
