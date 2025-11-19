@@ -26,7 +26,8 @@ local ARCHIPELAGO_BASE_DIR = os.getenv("USERPROFILE") .. "\\Documents\\My Games\
 -- Quality-of-life settings
 local archipelagoSettings = {
     free_offerings = true,  -- Automatically add shrine offerings when receiving shrine tokens
-    dungeon_marker_mode = "reveal_and_fast_travel" -- or "reveal_only"
+    dungeon_marker_mode = "reveal_and_fast_travel", -- or "reveal_only"
+    dungeon_warp = "off" -- "off", "on", or "item"
 }
 
 -- Queue for displaying messages when multiple items are processed
@@ -904,6 +905,23 @@ function loadSettings()
                     archipelagoSettings.dungeon_marker_mode = "reveal_and_fast_travel"
                 end
                 writeLog("Found dungeon_marker_mode=" .. archipelagoSettings.dungeon_marker_mode)
+            elseif key == "dungeon_warp" then
+                local v = value:lower()
+                if v == "on" or v == "item" or v == "off" then
+                    archipelagoSettings.dungeon_warp = v
+                    writeLog("Found dungeon_warp=" .. v)
+                    -- If dungeon_warp is "on", enable it immediately
+                    if v == "on" then
+                        local okSet, errSet = pcall(function()
+                            console.ExecuteConsole("set APWarpEnabled to 1")
+                        end)
+                        if okSet then
+                            writeLog("Set APWarpEnabled to 1 (dungeon_warp=on)")
+                        else
+                            writeLog("Failed to set APWarpEnabled: " .. tostring(errSet), "ERROR")
+                        end
+                    end
+                end
             elseif key == "selected_class" then
                 selectedClass = value
                 writeLog("Found selected_class: " .. value)
@@ -1745,6 +1763,21 @@ local function processItemQueue()
             else
                 writeLog("Failed to enable fast travel: " .. tostring(result), "ERROR")
             end
+        -- Handle Dungeon Warp item
+        elseif itemName == "Dungeon Warp" then
+            writeLog("Processing Dungeon Warp item - enabling dungeon warp functionality")
+            local success, result = pcall(function()
+                console.ExecuteConsole("set APWarpEnabled to 1")
+            end)
+            
+            if success then
+                writeLog("Successfully enabled dungeon warp (APWarpEnabled = 1)")
+                -- Update local setting so it takes effect immediately
+                archipelagoSettings.dungeon_warp = "item"
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to enable dungeon warp: " .. tostring(result), "ERROR")
+            end
         -- Handle Birth Sign item
         elseif itemName == "Birth Sign" then
             writeLog("Processing Birth Sign item - showing birth sign menu and setting APBirthSignSet")
@@ -2200,7 +2233,20 @@ local function handlePeriodicProcessing()
         frameCounter = 0       
         
     -- Re-check for a valid session every ~5s; also handle mid-session disconnects
-    if (not modFullyInitialized) or (not checkValidSession()) then
+    -- If session appears mid-game, trigger probe immediately
+    local sessionValid = checkValidSession()
+    if sessionValid and not allowAPSync then
+        -- Session just became valid - trigger probe now
+        writeLog("Valid AP session detected mid-game - triggering APSync probe")
+        allowAPSync = true
+        if not probeFinished and not apProbe.awaiting then
+            startAPSyncProbe()
+        end
+    elseif not sessionValid then
+        allowAPSync = false
+    end
+    
+    if (not modFullyInitialized) or (not sessionValid) then
             handleInitialization()
         end
         
@@ -2219,18 +2265,31 @@ local function handlePeriodicProcessing()
                 if hasItems then
                     -- Gate item processing until APsync has completed
                     if not probeFinished then
-                        probeAttemptCount = probeAttemptCount + 1
-                        writeLog("Delaying item processing until APsync completes (attempt " .. probeAttemptCount .. "/3)")
+                        -- Only increment if we haven't reached the limit
+                        if probeAttemptCount < 3 then
+                            probeAttemptCount = probeAttemptCount + 1
+                            writeLog("Delaying item processing until APsync completes (attempt " .. probeAttemptCount .. "/3)")
+                        end
                         
-                        if probeAttemptCount >= 3 and not probeStuckMessageShown then
-                            writeLog("APsync probe failed after 3 attempts - queue blocked, cannot verify sync state", "ERROR")
-                            pcall(function()
-                                console.ExecuteConsole('Message "APSync Probe stuck - item queue blocked. Check log file."')
-                            end)
-                            probeStuckMessageShown = true
+                        if probeAttemptCount >= 3 then
+                            if not probeStuckMessageShown then
+                                writeLog("APsync probe failed after 3 attempts - restarting probe", "ERROR")
+                                pcall(function()
+                                    console.ExecuteConsole('Message "APSync Probe stuck - restarting probe attempt"')
+                                end)
+                                probeStuckMessageShown = true
+                            end
+                            -- Kill current probe and restart
+                            apProbe.awaiting = false
+                            probeAttemptCount = 0
+                            probeStuckMessageShown = false
+                            if allowAPSync then
+                                startAPSyncProbe()
+                            end
                         end
                     else
                         probeAttemptCount = 0
+                        probeStuckMessageShown = false
                         processItemQueue()
                     end
                 end
@@ -2470,13 +2529,13 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                             -- Continue into normal diff handling below
                         end
                     end
-                    -- in-game has more than disk; block this load
+                    -- in-game has more than disk; warn the user but allow processing
                     if ingameCount > diskCount then
-                        writeLog("Save has " .. tostring(ingameCount) .. " items but AP session only has " .. tostring(diskCount) .. " - load correct save or reconnect client", "ERROR")
+                        writeLog("Save has " .. tostring(ingameCount) .. " items but AP session only has " .. tostring(diskCount) .. " - warning user", "WARNING")
                         pcall(function()
-                            console.ExecuteConsole("MessageBox \"This save has more Archipelago items than your current AP session. Load a matching save, or connect the client to this save's slot/seed.\"")
+                            console.ExecuteConsole("MessageBox \"Warning: This save has more AP items than your connected session. Load a matching save or reconnect to this save's slot/seed.\"")
                         end)
-                        probeFinished = true  -- Probe completed successfully; user has been warned
+                        probeFinished = true  -- Probe completed; user has been warned
                         return
                     end
                     if diff > 0 and diff <= 20 then
@@ -2680,6 +2739,18 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         writeLog("Decremented " .. regionVar .. " by 1")
                     else
                         writeLog("Failed to decrement " .. regionVar .. ": " .. tostring(errDec), "ERROR")
+                    end
+                    
+                    -- Offer a dungeon warp if Dungeon Warp setting is enabled
+                    if archipelagoSettings.dungeon_warp ~= "off" then
+                        local okWarp, errWarp = pcall(function()
+                            console.ExecuteConsole("set APOfferWarp to 1")
+                        end)
+                        if okWarp then
+                            writeLog("Set APOfferWarp to 1 for dungeon clear: " .. clearedName)
+                        else
+                            writeLog("Failed to set APOfferWarp: " .. tostring(errWarp), "ERROR")
+                        end
                     end
                 else
                     -- Not validated; just log
