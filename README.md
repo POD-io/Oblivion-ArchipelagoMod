@@ -52,12 +52,14 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 **If you do not see OBSE64** as an option, please try restarting MO2.
 
 ## How to confirm the mod is working as expected
-If everything is in order, you will see your Archipelago goal display as a quest as soon as you finish creating your character.
-If the Bridge mod is not communicating as expected, you will see a pop-up ingame after 30 seconds.
+If everything is in order, you will see your Archipelago goal display as a quest as soon as you finish creating your character.  
+If the Bridge mod is not communicating as expected, you will see a pop-up ingame after 30 seconds.  
 If neither of these happen, please double check that the .ESP mod is installed and activated.
 
 ## Troubleshooting: 
 
-In the newest update, all Archipelago items will be automatically re-synced with you in the event of a death, crash, or other loss of state.
-The client will also warn you if you are disconnected, and handle recovery in a more graceful manner.
-In the event something is not running as you expect, please check `%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago\archipelago_debug.log`
+In the newest update, all Archipelago items will be automatically re-synced with you in the event of a death, crash, or other loss of state.  
+The client will also warn you if you are disconnected, and handle recovery in a more graceful manner.  
+
+In the event something is not running as you expect, please check:  
+`%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago\archipelago_debug.log`
