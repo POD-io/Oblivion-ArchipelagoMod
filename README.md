@@ -52,9 +52,9 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 **If you do not see OBSE64** as an option, please try restarting MO2.
 
 ## How to confirm the mod is working as expected
-If everything is in order, you should see your Archipelago goal display in-game as a quest as soon as you finish creating your character.  
-Good luck!
-
+If everything is in order, you will see your Archipelago goal display as a quest as soon as you finish creating your character.
+If the Bridge mod is not communicating as expected, you will see a pop-up ingame after 30 seconds.
+If neither of these happen, please double check that the .ESP mod is installed and activated.
 
 ## Troubleshooting: 
 
