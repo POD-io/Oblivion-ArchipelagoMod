@@ -10,10 +10,24 @@ A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/)
 This can be acquired on the [MO2 Discord](https://discord.gg/Jjprnb5rDJ)  
 [Direct link to version 2.5.3](https://discord.com/channels/265929299490635777/379225566122999808/1377090478515945524)
 
-##### 2. Install UE4SS and OBSE64 files:
+##### 2. [UE4SS for OblivionRemastered](https://www.nexusmods.com/oblivionremastered/mods/32) and [OBSE64](https://www.nexusmods.com/oblivionremastered/mods/282) both **need to be installed manually into your game folder**
 
-Download OblivionRemastered_UE4SS_OBSE64.zip from the [Releases](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases) page.<br>
-Extract the OblivionRemastered folder from the ZIP into your Oblivion Remastered game folder. Instructions are included in the .zip
+> **Note:**  
+For the **UE4SS mod**, do not install the included dwmapi.dll file.  
+For the **OBSE64 mod**, you only need the obse64_xxx_xxx.dll and obse64_loader.exe files.
+
+Your folder should look like this:
+```
+Oblivion Remastered
+|--OblivionRemastered
+|--|--Binaries
+|--|--|--Win64
+|--|--|--|--UE4SS
+|--|--|--|--obse64__xxx_xxx.dll
+|--|--|--|--obse64_loader.exe
+```
+
+<img width="332" height="216" alt="image" src="https://github.com/user-attachments/assets/3c92122c-6725-4e32-97b7-29553064135d" />
 
 ##### 3. Install the following mods into MO2:  
 
