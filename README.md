@@ -100,8 +100,11 @@ If neither of these happen, please double check that the .ESP mod is installed a
 
 ## Troubleshooting: 
 
-In the newest update, all Archipelago items will be automatically re-synced with you in the event of a death, crash, or other loss of state.  
-The client will also warn you if you are disconnected, and handle recovery in a more graceful manner.  
+### Log Locations
+**UE4SS log**:  
+Oblivion Remastered\OblivionRemastered\Binaries\Win64\ue4ss\ue4ss.log  
+Look for any lines with 'ArchipelagoBridge' when troubleshooting
 
-In the event something is not running as you expect, please check:  
-`%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago\archipelago_debug.log`
+**Client log and config files**:  
+%userprofile%\Documents\My Games\Oblivion Remastered\Saved\Archipelago  
+archipelago_debug.log will help with any in-game issues
