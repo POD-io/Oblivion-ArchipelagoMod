@@ -36,6 +36,17 @@ local config = {
 
         -- Currency
         ["Gold"] = "F",
+        ["Gold (10)"] = "F",  -- Filler item: 10 gold
+        
+        -- Basic Filler Items
+        ["Lockpick"] = "0000000A",
+        ["Repair Hammer"] = "0000000C",
+        ["Steel Arrows"] = "000229C1",
+        ["Torch"] = "0002CF9F",
+        ["Common Soul Gem"] = "000382D6",
+
+        -- Special Arrows
+        ["Fire Arrow Bundle"] = "EncArrow2SteelFireDamage",
         
         -- Daedric Artifacts/Rewards
         ["Azura's Star"] = "AzurasStar",
@@ -107,7 +118,7 @@ local config = {
         ["Daedra Heart"] = "0001EC8F", 
         ["Cheap Wine"] = "00037F7F",
         ["Cyrodiilic Brandy"] = "00033569",
-        ["Lesser Soul Gem"] = "00025205",
+        ["Lesser Soul Gem"] = "00382D3",
         ["Lettuce"] = "00023D69",
         ["Yarn"] = "00033681",
         ["Black Soul Gem"] = "00000192",
@@ -117,7 +128,66 @@ local config = {
         ["Nightshade"] = "00033688",
         ["Ectoplasm"] = "0001EBFE",
         ["Lion Pelt"] = "000228E4",
-        ["Greater Soulgem Package"] = "000382DA"
+        ["Greater Soulgem Package"] = "000382DA",
+        
+        -- Unique Items
+        -- WEAPONS
+        ["Akavari Sunderblade"] = "000CA154",
+        ["Captain Kordan's Saber"] = "000CA158",
+        ["Akavari Warblade"] = "000CA155",
+        ["Truncheon of Submission"] = "000CA157",
+        ["Battleaxe of Hatred"] = "000CA152",
+        ["Destarine's Cleaver"] = "000CA159",
+        ["Bow of Infliction"] = "000CA156",
+        ["Redwave"] = "00095A39",
+        ["Calliben's Grim Retort"] = "000CB6F3",
+        ["Frostwyrm Bow"] = "000C55E4",
+        
+        -- SHIELDS
+        ["Aegis of the Apocalypse"] = "000CA117",
+        ["Birthright of Astalon"] = "000CA110",
+        ["Dondoran's Juggernaut"] = "000CA10F",
+        
+        -- GAUNTLETS
+        ["Fists of the Drunkard"] = "000CA11A",
+        ["Gauntlets of Gluttony"] = "000CA11C",
+        ["Hands of the Atronach"] = "000CA118",
+        ["Rasheda's Special"] = "000CA114",
+        
+        -- HELMETS
+        ["Fin Gleam"] = "00082DD8",
+        ["Helm of the Deep Delver"] = "000CA119",
+        ["Helm of Ferocity"] = "000CA11B",
+        ["Tower of the Nine"] = "000CA116",
+        
+        -- BOOTS
+        ["Boots of the Swift Merchant"] = "000CA111",
+        ["Quicksilver Boots"] = "000CA113",
+        ["Nistor's Boots"] = "000CA12B",
+        ["Boots of Springheel Jak"] = "000148D4",
+        
+        -- GREAVES
+        ["Monkeypants"] = "000CA112",
+        
+        -- CLOTHING
+        ["Cowl of the Druid"] = "000CA121",
+        ["Mantle of the Woodsman"] = "000CA129",
+        ["Imperial Breeches"] = "000CA125",
+        ["Apron of the Master Artisan"] = "000CA122",
+        ["Robe of Creativity"] = "000CA127",
+        ["Vest of the Bard"] = "000CA123",
+        
+        -- AMULETS
+        ["Circlet of Omnipotence"] = "00088FED",
+        
+        -- RINGS
+        ["Ring of Transmutation"] = "000CA126",
+        ["Ring of Wortcraft"] = "000CA128",
+        ["Spectre Ring"] = "000CA12A",
+        ["Ring of the Gray"] = "0000CCC8",
+        
+        -- STAVES
+        ["Apotheosis"] = "000CA153"
     },
     
     -- Unlock token to completion token mapping (for removal when quest completes)
@@ -227,6 +297,26 @@ local config = {
         ["Vaermina"] = "APVaerminaLocked"
     },
     
+    -- Sidequest location name to game variable mapping
+    -- These map location check names to their corresponding APSidequest global variables
+    sidequestMappings = {
+        ["Acquire Akaviri Sunderblade"] = "APSQAkaviriSunderblade",
+        ["Acquire Captain Kordan's Saber"] = "APSQCaptainKordanSaber",
+        ["Acquire Battleaxe of Hatred"] = "APSQBattleaxeOfHatred",
+        ["Acquire Akavari Warblade"] = "APSQAkavariWarblade",
+        ["Acquire Truncheon of Submission"] = "APSQTruncheonOfSubmission",
+        ["Acquire Destarine's Cleaver"] = "APSQDestarinesCleaver",
+        ["Acquire Bow of Infliction"] = "APSQBowOfInfliction",
+        ["Acquire Aegis of the Apocalypse"] = "APSQAegisOfTheApocalypse",
+        ["Acquire Helm of the Deep Diver"] = "APSQHelmOfTheDeepDiver",
+        ["Acquire Monkeypants"] = "APSQMonkeypants",
+        ["Obtain a Varla Stone"] = "APSQVarla",
+        ["Obtain Fin Gleam"] = "APSQFinGleam",
+        ["Visit Dive Rock"] = "APSQDiveRock",
+        ["Obtain Bands of Kwang Lao"] = "APSQBandsOfKwangLao",
+        ["Visit an Ayleid Well"] = "APSQAyleidWell"
+    },
+
     -- Mapping from dungeon names to their ShowMap marker IDs
     dungeonMapMarkers = {
         ["Amelion Tomb"] = "AmelionTombMapmarker",
