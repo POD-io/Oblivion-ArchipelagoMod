@@ -12,11 +12,11 @@ If you plan to use a mod manager, please use [Option 2](#mod-manager-installatio
 
 ### To use the all-in-one installer:
 
-1. Download **Batch_Installer.zip** from the [Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest).
+1. Download the All-in-one installer for your platform from the [Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest).
 
 2. Extract the folder to any location.
 
-3. Run `install.bat`.
+3. Follow the README.txt file for install instructions.
 
 4. When prompted, provide your *Oblivion Remastered* installation directory  
    (or press **Y** to confirm if it is auto-detected).
