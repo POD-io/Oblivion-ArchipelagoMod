@@ -34,8 +34,6 @@ If you are already using MO2 or prefer to use a mod manager for easy on/off togg
 
 If you used Option 1 above, you can [skip](#how-to-use) this section.
 
-## Mod Manager Installation
-
 ##### 1. Install the Dev Branch of MO2:
 This can be acquired on the [MO2 Discord](https://discord.gg/Jjprnb5rDJ)  
 [Direct link to version 2.5.3](https://discord.com/channels/265929299490635777/379225566122999808/1377090478515945524)
@@ -80,7 +78,7 @@ You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the *
 ## How to use
 
 > **Note**:
-> In the latest version, it is recommended you start a new character for each playthrough.  
+> In the latest version, it is recommended you start a new character for each multiworld seed.  
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
@@ -89,7 +87,7 @@ For Archipelago instructions, see https://archipelago.gg/tutorial/
 3) Connect to your server.
 4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
 
-### Make sure to launch through MO2 using the OBSE64 option, as seen here:
+### For MO2: Make sure to launch using the OBSE64 option, as seen here:
 
 <img width="602" height="187" alt="image" src="https://github.com/user-attachments/assets/d1ad2ea4-f559-409f-b628-7ea885d75649" />
 
