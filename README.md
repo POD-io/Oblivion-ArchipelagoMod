@@ -24,7 +24,7 @@ If you plan to use a mod manager, please use [Option 2](#mod-manager-installatio
 The script will automatically install or update all required files directly in your Oblivion game folder.  
 
 **IMPORTANT:**  
-Once successfully installed, you must launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
+**Windows:** Once successfully installed, you must launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
 
 > **Note:**  If you wish to play Oblivion **without** Archipelago, you'll need to run the uninstall.bat file to return to a Vanilla install state.
 
