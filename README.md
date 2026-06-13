@@ -78,16 +78,16 @@ You should see the **ArchipelagoBridge** mod under the UE4SS Mods tab, and the *
 ## How to use
 
 > **Note**:
-> In the latest version, it is recommended you start a new character for each multiworld seed.  
+> It is recommended you start a new character for each multiworld seed.  
 
 For Archipelago instructions, see https://archipelago.gg/tutorial/
 
 1) Generate a new Archipelago multiworld.
 2) Launch the Oblivion Remastered Client from the ArchipelagoLauncher.exe.
 3) Connect to your server.
-4) Once connected, you can launch Oblivion Remastered through your mod manager and start playing.
+4) Launch Oblivion Remastered through your mod manager or via obse64_loader.exe.
 
-### For MO2: Make sure to launch using the OBSE64 option, as seen here:
+### For MO2: Make sure to launch through MO2 using the OBSE64 option, as seen here:
 
 <img width="602" height="187" alt="image" src="https://github.com/user-attachments/assets/d1ad2ea4-f559-409f-b628-7ea885d75649" />
 
