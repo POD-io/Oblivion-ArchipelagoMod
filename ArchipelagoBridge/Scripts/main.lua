@@ -319,7 +319,17 @@ local apProbe = {
     awaiting = false,
     circularBufferMode = false,
     circularBufferCheckCount = 0,
+    inApsyncBlock = false,
+    pendingValue = nil,
 }
+local menuCheckProbe = {
+    awaiting = false,
+    lastCount = 0,
+    inBlock = false,
+    gameHour = nil,
+    cellFormID = nil,
+}
+local pendingMenuReinitCheck = false
 
 local cellLookupProbe = {
     awaiting = false,
@@ -346,25 +356,226 @@ local function apFindConsole()
     return apProbe.console
 end
 
+local function apProbeResetBlock()
+    apProbe.inApsyncBlock = false
+    apProbe.pendingValue = nil
+end
+
+local function apProbeFeedLine(line)
+    if line:find("Start {ID:APSYNC}", 1, true) then
+        apProbe.inApsyncBlock = true
+        apProbe.pendingValue = nil
+        return false
+    end
+    if not apProbe.inApsyncBlock then return false end
+
+    local v = line:match("^GetGlobalValue >>%s*(%d+%.?%d*)")
+    if v then
+        apProbe.pendingValue = math.floor(tonumber(v))
+    end
+
+    if line:find("GameSetting End", 1, true) then
+        apProbe.inApsyncBlock = false
+        return true
+    end
+    return false
+end
+
+-- When APAppliedCount reads 0 on an initialized session, verify GameHour/cell
+-- before asking for new save reinit - this detects if player exited to main menu.
+local function menuCheckInProgress()
+    return pendingMenuReinitCheck or menuCheckProbe.awaiting
+end
+
+local function menuCheckFeedLine(line)
+    if line:find("Start {ID:APMENU}", 1, true) then
+        menuCheckProbe.inBlock = true
+        menuCheckProbe.gameHour = nil
+        menuCheckProbe.cellFormID = nil
+        return false
+    end
+    if not menuCheckProbe.inBlock then return false end
+
+    local hour = line:match("^GetGlobalValue >>%s*(%d+%.?%d*)")
+    if hour then
+        menuCheckProbe.gameHour = tonumber(hour)
+    end
+
+    local cell = line:match("Cell:%s*(%x+)")
+    if cell then
+        menuCheckProbe.cellFormID = cell:upper()
+    end
+
+    if line:find("GameSetting End", 1, true) then
+        menuCheckProbe.inBlock = false
+        return true
+    end
+    return false
+end
+
+local function startMenuCheckProbe()
+    apFindConsole()
+    local inst = apProbe.console
+    if not inst then
+        pendingMenuReinitCheck = false
+        writeLog("Menu check aborted: console unavailable", "WARN")
+        return
+    end
+
+    menuCheckProbe.awaiting = true
+    menuCheckProbe.lastCount = inst.OutputBufferSize
+    menuCheckProbe.inBlock = false
+    menuCheckProbe.gameHour = nil
+    menuCheckProbe.cellFormID = nil
+
+    pcall(function()
+        console.ExecuteConsole('GetGS "Start {ID:APMENU}"')
+        console.ExecuteConsole("GetGlobalValue GameHour")
+        console.ExecuteConsole("player.getparentcell")
+        console.ExecuteConsole('GetGS "End"')
+    end)
+end
+
+local function readMenuCheckConsole()
+    if not menuCheckProbe.awaiting then return false end
+
+    local inst = apFindConsole()
+    if not inst then return false end
+
+    local newCount = inst.OutputBufferSize
+    if newCount <= menuCheckProbe.lastCount then return false end
+
+    local blockComplete = false
+    for i = menuCheckProbe.lastCount, newCount - 1 do
+        local line = inst.OutputBuffer[i + 1]:ToString()
+        if menuCheckFeedLine(line) then
+            blockComplete = true
+        end
+    end
+    menuCheckProbe.lastCount = newCount
+
+    if blockComplete then
+        menuCheckProbe.awaiting = false
+        return true
+    end
+    return false
+end
+
+local function isMainMenuFalsePositive(gameHour, cellFormID)
+    if gameHour == nil or math.abs(gameHour - 1.0) >= 0.01 then
+        return false
+    end
+    if cellFormID and cellFormID:match("^%x+$") then
+        return false
+    end
+    return true
+end
+
+local function processPendingMenuReinitCheck()
+    if not pendingMenuReinitCheck then return end
+    if not readMenuCheckConsole() then return end
+
+    pendingMenuReinitCheck = false
+    local hour = menuCheckProbe.gameHour
+    local cell = menuCheckProbe.cellFormID
+
+    if isMainMenuFalsePositive(hour, cell) then
+        writeLog("Ignoring APAppliedCount=0: main menu (GameHour=1.00, no cell)")
+        if reinitPending then
+            writeLog("Clearing stale reinitPending: player returned to main menu")
+            reinitPending = false
+        end
+        probeFinished = true
+        return
+    end
+
+    writeLog("Probe zero confirmed in-game (GameHour=" .. tostring(hour) .. ", cell=" .. tostring(cell) .. "); continuing reinit flow")
+    if reinitPending then
+        writeLog("Clearing stale reinitPending before new-save reinit")
+        reinitPending = false
+    end
+    pcall(function()
+        console.ExecuteConsole('Message "AP_SYNC COUNT 0"')
+    end)
+end
+
+local function apProbeEmitCount(value)
+    if menuCheckInProgress() then
+        return
+    end
+
+    local countStr = tostring(value)
+    if not probeFinished then
+        local ingameCount = value
+        local diskCount = getBridgeStatusAPCount()
+        local diff = diskCount - ingameCount
+        writeLog("AP sync: in-game=" .. countStr .. ", bridge=" .. tostring(diskCount) .. ", diff=" .. tostring(diff))
+
+        if ingameCount == 0 and modFullyInitialized and not suppressReinitOnNextZero then
+            pendingMenuReinitCheck = true
+            startMenuCheckProbe()
+            if menuCheckInProgress() then
+                apProbe.awaiting = false
+                apProbe.circularBufferMode = false
+                apProbe.circularBufferCheckCount = 0
+                apProbeResetBlock()
+                local inst = apFindConsole()
+                if inst then
+                    apProbe.lastCount = inst.OutputBufferSize
+                end
+                return
+            end
+        end
+
+        if ingameCount ~= 0 then
+            if ingameCount > diskCount then
+                -- No match, show notification messagebox with prompt
+            elseif diff > 0 and diff <= 20 then
+                local removed = truncateBridgeStatusTail(diff)
+                pcall(function()
+                    console.ExecuteConsole("Message \"APSync: requesting resend of " .. tostring(removed) .. " items\"")
+                end)
+                probeFinished = true
+                probeAttemptCount = 0
+            elseif diff > 20 then
+                pcall(function()
+                    console.ExecuteConsole("set APSyncRequest to 1")
+                end)
+            else
+                probeFinished = true
+                probeAttemptCount = 0
+            end
+        end
+    end
+    pcall(function()
+        console.ExecuteConsole('Message "AP_SYNC COUNT ' .. countStr .. '"')
+    end)
+    apProbe.awaiting = false
+    apProbe.circularBufferMode = false
+    apProbe.circularBufferCheckCount = 0
+    apProbeResetBlock()
+end
+
 local function apReadConsoleAndEmitCount()
     local inst = apFindConsole()
     if not inst then return end
-    
+
     local newCount = inst.OutputBufferSize
     local bufferAtMax = newCount >= 1024
-    
+
     if apProbe.awaiting then
-        local value = nil
+        local blockComplete = false
         local startIdx, endIdx
-        
+
         if apProbe.circularBufferMode and bufferAtMax and newCount == apProbe.lastCount then
             apProbe.circularBufferCheckCount = apProbe.circularBufferCheckCount + 1
             if apProbe.circularBufferCheckCount < 60 then
                 apProbe.lastCount = newCount
                 return
             end
-            startIdx = math.max(0, newCount - 20)
+            startIdx = math.max(0, newCount - 40)
             endIdx = newCount - 1
+            apProbeResetBlock()
         elseif newCount > apProbe.lastCount then
             startIdx = apProbe.lastCount
             endIdx = newCount - 1
@@ -372,52 +583,21 @@ local function apReadConsoleAndEmitCount()
             apProbe.lastCount = newCount
             return
         end
-        
+
         for i = startIdx, endIdx do
             local line = inst.OutputBuffer[i+1]:ToString()
-            local v = line:match(">>%s*(%d+%.?%d*)") or line:match("^(%d+%.?%d*)$")
-            if v then 
-                local numValue = tonumber(v)
-                if numValue then
-                    value = tostring(math.floor(numValue))
-                end
+            if apProbeFeedLine(line) then
+                blockComplete = true
             end
         end
-        
-    if value then
-            if not probeFinished then
-                local ingameCount = tonumber(value) or 0
-                local diskCount = getBridgeStatusAPCount()
-                local diff = diskCount - ingameCount
-                writeLog("AP sync: in-game=" .. tostring(ingameCount) .. ", bridge=" .. tostring(diskCount) .. ", diff=" .. tostring(diff))
-                -- Defer zero-count diff handling to the notification hook so it can prompt for reinit or auto-init
-                if ingameCount ~= 0 then
-                    if ingameCount > diskCount then
-                        -- Keep probe unfinished to block processing; notification hook will show the messagebox
-                    elseif diff > 0 and diff <= 20 then
-                        local removed = truncateBridgeStatusTail(diff)
-                        pcall(function()
-                            console.ExecuteConsole("Message \"APSync: requesting resend of " .. tostring(removed) .. " items\"")
-                        end)
-                        probeFinished = true
-                        probeAttemptCount = 0  -- Reset attempt counter on successful completion
-                    elseif diff > 20 then
-                        pcall(function()
-                            console.ExecuteConsole("set APSyncRequest to 1")
-                        end)
-                        -- wait for APPROVED/DENIED before marking handled
-                    else
-                        probeFinished = true
-                        probeAttemptCount = 0  -- Reset attempt counter on successful completion
-                    end
-                end
+
+        if blockComplete then
+            if apProbe.pendingValue ~= nil then
+                apProbeEmitCount(apProbe.pendingValue)
+            else
+                writeLog("APSYNC block ended but GetGlobalValue >> line not found", "WARN")
+                apProbeResetBlock()
             end
-            pcall(function()
-                console.ExecuteConsole('Message "AP_SYNC COUNT ' .. tostring(value) .. '"')
-            end)
-            apProbe.awaiting = false
-            apProbe.circularBufferMode = false
-            apProbe.circularBufferCheckCount = 0
         end
     end
     apProbe.lastCount = newCount
@@ -426,26 +606,27 @@ end
 local function startAPSyncProbe()
     apFindConsole()
     local currentBufferSize = apProbe.console and apProbe.console.OutputBufferSize or 0
-    
+
     if currentBufferSize >= 1024 then
         apProbe.circularBufferMode = true
         apProbe.circularBufferCheckCount = 0
     else
         apProbe.circularBufferMode = false
     end
-    
+
     apProbe.awaiting = true
     apProbe.lastCount = currentBufferSize
+    apProbeResetBlock()
     probeFinished = false
     probeAttemptCount = 0
     probeStuckMessageShown = false
-    
+
     local success, err = pcall(function()
         console.ExecuteConsole('GetGS "Start {ID:APSYNC}"')
         console.ExecuteConsole('GetGlobalValue APAppliedCount')
         console.ExecuteConsole('GetGS "End"')
     end)
-    
+
     if not success then
         writeLog("Probe failed to execute console commands: " .. tostring(err), "ERROR")
         apProbe.awaiting = false
@@ -551,7 +732,6 @@ end
 local probeFinished = false
 local probeAttemptCount = 0
 local probeStuckMessageShown = false
-
 
 -- Initialization probe and reinit confirmation state
 local reinitPending = false
@@ -3345,7 +3525,8 @@ local function handlePeriodicProcessing()
     end
 
     -- Start probe AFTER initialization to avoid reading init console output as APAppliedCount.
-    if allowAPSync and modFullyInitialized and not probeFinished and not apProbe.awaiting and not probeStartedForSession then
+    if allowAPSync and modFullyInitialized and not probeFinished and not apProbe.awaiting and not probeStartedForSession
+        and not menuCheckInProgress() then
         probeStartedForSession = true
         writeLog("Starting APSync probe (post-init)")
         startAPSyncProbe()
@@ -3384,7 +3565,7 @@ local function handlePeriodicProcessing()
                             apProbe.awaiting = false
                             probeAttemptCount = 0
                             probeStuckMessageShown = false
-                            if allowAPSync then
+                            if allowAPSync and not menuCheckInProgress() then
                                 startAPSyncProbe()
                             end
                         end
@@ -3423,6 +3604,8 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
     probeFinished = false
     probeStartedForSession = false
     probeAttemptCount = 0  -- Reset attempt counter on each load
+    pendingMenuReinitCheck = false
+    menuCheckProbe.awaiting = false
     if not gameStarted then
         writeLog("Game fade-in detected")
         gameStarted = true
@@ -3492,6 +3675,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 handlePeriodicProcessing()
 
                 readCellLookupConsole()
+                processPendingMenuReinitCheck()
                 apReadConsoleAndEmitCount()
                 processPendingFadeActions()
 
@@ -3573,7 +3757,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
     -- Deploy APSync Probe per OnFadeToGameBeginEvent (only if client is connected).
     allowAPSync = checkValidSession()
     if allowAPSync then
-        if not probeFinished and not apProbe.awaiting then
+        if not probeFinished and not apProbe.awaiting and not menuCheckInProgress() then
             startAPSyncProbe()
             probeStartedForSession = true
         end
@@ -3748,17 +3932,17 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         -- Refresh settings to learn disk-initialized state for the current prefix
                         pcall(function() loadSettings() end)
                         if modFullyInitialized then
-                            -- Already initialized on this seed: prompt user to confirm reinit for this new save
-                            if not reinitPending then
-                                local ok = pcall(function()
-                                    console.ExecuteConsole('set APReinitRequest to 1')
-                                end)
-                                if ok then
-                                    writeLog("Requested reinit confirmation for this save (APReinitRequest=1) due to APAppliedCount=0 with prior initialization")
-                                    reinitPending = true
-                                end
+                            if reinitPending then
+                                writeLog("APAppliedCount=0 with reinit already pending; waiting for player response")
+                                return
                             end
-                            -- Wait for APPROVED/DENIED
+                            local ok = pcall(function()
+                                console.ExecuteConsole("set APReinitRequest to 1")
+                            end)
+                            if ok then
+                                writeLog("Requested reinit confirmation for this save (APReinitRequest=1) due to APAppliedCount=0 with prior initialization")
+                                reinitPending = true
+                            end
                             return
                         else
                             -- Not initialized yet for this seed: perform initialization now
@@ -4608,80 +4792,11 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 end
                 return
             end
-            
-            -- ========================================
-            -- DEBUG SECTION, LEAVE FOR NOW BUT CAN CLEAN UP LATER
-            -- ========================================
-            -- Dump the cached cell name to a file for validation
-            if text == "AP_TEST_CELL_LOOKUP" then
-                pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 0.0001
-                end)
-
-                local debugPath = getArchipelagoPath("cell_lookup_test.txt")
-                local debugFile = io.open(debugPath, "w")
-                if debugFile then
-                    debugFile:write("=== Cell Lookup Test ===\n")
-                    debugFile:write("Time: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n\n")
-
-                    -- FormID captured by the fade-in lookup
-                    local formID = cellLookupProbe and cellLookupProbe.foundFormID
-                    debugFile:write("FormID : " .. (formID or "none captured yet") .. "\n")
-
-                    -- Cell name resolved from CSV
-                    if currentCellName then
-                        debugFile:write("Cell   : " .. currentCellName .. "\n")
-                    else
-                        debugFile:write("Cell   : (not resolved - enter a cell and wait ~3s for fade-in lookup to complete)\n")
-                        if formID then
-                            -- Attempt an immediate re-lookup now so the user can see if the CSV matches
-                            local name = lookupCellNameByFormID(formID)
-                            if name then
-                                debugFile:write("Retry  : " .. name .. " (CSV matched on retry; will cache now)\n")
-                                currentCellName = name
-                            else
-                                debugFile:write("Retry  : no match in CSV for FormID " .. formID .. "\n")
-                            end
-                        end
-                    end
-
-                    -- World fallback
-                    local worldName = "unavailable"
-                    pcall(function()
-                        local player = UEHelpers:GetPlayer()
-                        if player and player:IsValid() then
-                            worldName = player:GetWorld():GetFullName()
-                        end
-                    end)
-                    debugFile:write("World  : " .. worldName .. "\n")
-
-                    -- Substring match example (for future specific-cell kill validation)
-                    if currentCellName then
-                        debugFile:write("\n-- Substring match examples --\n")
-                        local tests = { "Sideways Cave", "Plundered Mine", "Tamriel" }
-                        for _, pattern in ipairs(tests) do
-                            local matched = currentCellName:find(pattern, 1, true) ~= nil
-                            debugFile:write(string.format('  %-20s -> %s\n', pattern, matched and "MATCH" or "no match"))
-                        end
-                    end
-
-                    debugFile:close()
-                    writeLog("Cell lookup test written - cell: " .. tostring(currentCellName) .. "  formID: " .. tostring(formID))
-                else
-                    writeLog("Cell lookup test: could not write to " .. debugPath)
-                end
-                return
-            end
         end)
         notificationHookRegistered = true
         writeLog("Notification hook registered for event tracking")
         end
     end)
-            -- ========================================
-            -- DEBUG SECTION, LEAVE FOR NOW BUT CAN CLEAN UP LATER
-            -- ========================================
-
-
 
 -- F11 keybind registration
 RegisterKeyBind(Key.F11, function()
