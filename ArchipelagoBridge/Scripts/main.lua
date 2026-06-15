@@ -147,7 +147,7 @@ local ENCUMBRANCE_SETTINGS_OBJ = "/Script/UE5AltarPairing.Default__VOblivionInit
 local archipelagoSettings = {
     free_offerings = true,  -- Automatically add shrine offerings when receiving shrine tokens
     dungeon_marker_mode = "reveal_and_fast_travel", -- or "reveal_only"
-    dungeon_warp = "off", -- "off", "on", or "item"
+    dungeon_warp = "off", -- "off", "on", "item", or "early_item"
     auto_tracking = false,      -- Automatically switch compass tracking on cell transitions
     silent_auto_tracking = false -- do not show "Message" notifications for tracking
 }
@@ -1377,7 +1377,7 @@ function loadSettings()
                 writeLog("Found dungeon_marker_mode=" .. archipelagoSettings.dungeon_marker_mode)
             elseif key == "dungeon_warp" then
                 local v = value:lower()
-                if v == "on" or v == "item" or v == "off" then
+                if v == "on" or v == "item" or v == "early_item" or v == "off" then
                     archipelagoSettings.dungeon_warp = v
                     writeLog("Found dungeon_warp=" .. v)
                     -- If dungeon_warp is "on", enable it immediately
@@ -4180,16 +4180,14 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                             writeLog("Failed to decrement " .. regionVar .. ": " .. tostring(errDec), "ERROR")
                         end
                         
-                        -- Offer a dungeon warp if Dungeon Warp setting is enabled
-                        if archipelagoSettings.dungeon_warp ~= "off" then
-                            local okWarp, errWarp = pcall(function()
-                                console.ExecuteConsole("set APOfferWarp to 1")
-                            end)
-                            if okWarp then
-                                writeLog("Set APOfferWarp to 1 for dungeon clear: " .. clearedName)
-                            else
-                                writeLog("Failed to set APOfferWarp: " .. tostring(errWarp), "ERROR")
-                            end
+                        -- Signal in-game quest to offer warp
+                        local okWarp, errWarp = pcall(function()
+                            console.ExecuteConsole("set APOfferWarp to 1")
+                        end)
+                        if okWarp then
+                            writeLog("Set APOfferWarp to 1 for dungeon clear: " .. clearedName)
+                        else
+                            writeLog("Failed to set APOfferWarp: " .. tostring(errWarp), "ERROR")
                         end
                     end
                 else
