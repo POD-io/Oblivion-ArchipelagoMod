@@ -2344,6 +2344,32 @@ local function processItemQueue()
             else
                 writeLog("Invalid Nirnroot Satchel number: " .. tostring(satchelNumber), "ERROR")
             end
+        -- Handle Septim Satchel items
+        elseif itemName:match("^APSeptimSatchel%d+$") then
+            local satchelNumber = tonumber(itemName:match("APSeptimSatchel(%d+)"))
+            if satchelNumber and satchelNumber >= 1 and satchelNumber <= 5 then
+                local globalNames = {
+                    "APSeptimNoviceSatchelReceived",
+                    "APSeptimApprenticeSatchelReceived",
+                    "APSeptimJourneymanSatchelReceived",
+                    "APSeptimExpertSatchelReceived",
+                    "APSeptimMasterSatchelReceived"
+                }
+                local globalName = globalNames[satchelNumber]
+                writeLog("Processing Septim Satchel " .. satchelNumber .. " - setting " .. globalName .. " to 1")
+                local success, result = pcall(function()
+                    console.ExecuteConsole("set " .. globalName .. " to 1")
+                end)
+
+                if success then
+                    writeLog("Successfully set " .. globalName .. " to 1")
+                    table.insert(processedItems, itemName)
+                else
+                    writeLog("Failed to set " .. globalName .. ": " .. tostring(result), "ERROR")
+                end
+            else
+                writeLog("Invalid Septim Satchel number: " .. tostring(satchelNumber), "ERROR")
+            end
         -- Handle individual Nirnroot item
         elseif itemName == "Nirnroot" then
             writeLog("Processing Nirnroot - adding MS39Nirnroot to player inventory and incrementing APNirnrootCount")
@@ -4299,6 +4325,18 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 
                 return
             end
+
+            -- Handle gold collection milestone messages (Treasure Hunter)
+            local goldAmount = text:match("^(%d+) Gold Collected$")
+            if goldAmount then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+
+                writeCompletionStatus(goldAmount .. " Gold Collected")
+                writeLog("Gold milestone recorded: " .. goldAmount .. " Gold Collected")
+                return
+            end
             
             -- Handle Nirnroot harvest messages
             if text == "Nirnroot Harvested" then
@@ -4339,6 +4377,18 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 writeCompletionStatus("Victory")
                 writeLog("Nirnsanity Victory written to completion file")
                 
+                return
+            end
+
+            -- Handle Treasure Hunter Victory message
+            if text == "Treasure Hunter Victory" then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+
+                writeCompletionStatus("Victory")
+                writeLog("Treasure Hunter Victory written to completion file")
+
                 return
             end
 
