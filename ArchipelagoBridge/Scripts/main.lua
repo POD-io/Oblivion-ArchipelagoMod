@@ -20,20 +20,24 @@ local UEHelpers = require("UEHelpers")
 local config = require("ArchipelagoConfig")
 local console = require("OBRConsole")
 
+local function safePrint(s)
+    print(tostring(s):gsub("[^\32-\126]", "?"))
+end
+
 print("========================================")
 print("ARCHIPELAGO PATH DEBUG START")
 print("========================================")
 
 local ap_userprofile = os.getenv("USERPROFILE")
-print("USERPROFILE = " .. tostring(ap_userprofile))
+safePrint("USERPROFILE = " .. tostring(ap_userprofile))
 
 local ap_default_dir = tostring(ap_userprofile) .. "\\Documents\\My Games\\Oblivion Remastered\\Saved\\Archipelago"
-print("DEFAULT_ARCHIPELAGO_DIR = " .. ap_default_dir)
+safePrint("DEFAULT_ARCHIPELAGO_DIR = " .. ap_default_dir)
 
 local ap_test_connection = ap_default_dir .. "\\current_connection.txt"
 local ap_test_override = ap_default_dir .. "\\path_override.txt"
 print("Checking current_connection.txt")
-print("PATH = " .. ap_test_connection)
+safePrint("PATH = " .. ap_test_connection)
 
 local f = io.open(ap_test_connection, "r")
 if f then
@@ -44,14 +48,14 @@ else
 end
 
 print("Checking path_override.txt")
-print("PATH = " .. ap_test_override)
+safePrint("PATH = " .. ap_test_override)
 
 f = io.open(ap_test_override, "r")
 if f then
     print("RESULT = FOUND")
 
     local line = f:read("*line")
-    print("CONTENTS = " .. tostring(line))
+    safePrint("CONTENTS = " .. tostring(line))
 
     f:close()
 else
@@ -149,7 +153,7 @@ local archipelagoSettings = {
     dungeon_marker_mode = "reveal_and_fast_travel", -- or "reveal_only"
     dungeon_warp = "off", -- "off", "on", "item", or "early_item"
     auto_tracking = false,      -- Automatically switch compass tracking on cell transitions
-    silent_auto_tracking = false -- do not show "Message" notifications for tracking
+    silent_auto_tracking = false, -- do not show "Message" notifications for tracking
 }
 
 -- Queue for displaying messages when multiple items are processed
@@ -189,6 +193,7 @@ local arenaInitialized = false
 local shrinesInitialized = false
 local sidequestsInitialized = false
 local gatesInitialized = false
+local doomstonesInitialized = false
 local gateVisionInitialized = false
 local fastTravelInitialized = false
 local classSystemInitialized = false
@@ -244,6 +249,7 @@ local needsArenaInit = false
 local needsShrinesInit = false
 local needsSidequestsInit = false
 local needsGatesInit = false
+local needsDoomstonesInit = false
 local needsGateVisionInit = false
 local needsFastTravelInit = false
 local needsClassSystemInit = false
@@ -787,6 +793,7 @@ local function resetSettings()
     shrinesInitialized = false
     sidequestsInitialized = false
     gatesInitialized = false
+    doomstonesInitialized = false
     gateVisionInitialized = false
     fastTravelInitialized = false
     classSystemInitialized = false
@@ -797,6 +804,7 @@ local function resetSettings()
     needsShrinesInit = false
     needsSidequestsInit = false
     needsGatesInit = false
+    needsDoomstonesInit = false
     needsGateVisionInit = false
     needsFastTravelInit = false
     needsClassSystemInit = false
@@ -1346,6 +1354,9 @@ function loadSettings()
             elseif key == "gates_initialized" and value == "True" then
                 gatesInitialized = true
                 writeLog("Found gates already initialized from previous session")
+            elseif key == "doomstones_initialized" and value == "True" then
+                doomstonesInitialized = true
+                writeLog("Found doomstones already initialized from previous session")
             elseif key == "gate_vision" and value == "on" then
                 hasGateVisionSettings = true
                 writeLog("Found gate_vision=on in settings file")
@@ -1427,12 +1438,13 @@ function loadSettings()
     needsShrinesInit = hasShrineSettings and not shrinesInitialized
     needsSidequestsInit = hasSidequestSettings and not sidequestsInitialized
     needsGatesInit = not gatesInitialized
+    needsDoomstonesInit = not doomstonesInitialized
     needsGateVisionInit = hasGateVisionSettings and not gateVisionInitialized
     needsFastTravelInit = hasFastTravelSettings and not fastTravelInitialized
     needsClassSystemInit = hasClassSystemSettings and not classSystemInitialized
     needsDungeonCountersInit = hasDungeonSettings and not dungeonCountersInitialized
     
-    writeLog("Settings loaded - needsProgressiveShopStockInit: " .. tostring(needsProgressiveShopStockInit) .. ", needsArenaInit: " .. tostring(needsArenaInit) .. ", needsShrinesInit: " .. tostring(needsShrinesInit) .. ", needsSidequestsInit: " .. tostring(needsSidequestsInit) .. ", needsGatesInit: " .. tostring(needsGatesInit) .. ", needsGateVisionInit: " .. tostring(needsGateVisionInit) .. ", needsFastTravelInit: " .. tostring(needsFastTravelInit) .. ", needsClassSystemInit: " .. tostring(needsClassSystemInit))
+    writeLog("Settings loaded - needsProgressiveShopStockInit: " .. tostring(needsProgressiveShopStockInit) .. ", needsArenaInit: " .. tostring(needsArenaInit) .. ", needsShrinesInit: " .. tostring(needsShrinesInit) .. ", needsSidequestsInit: " .. tostring(needsSidequestsInit) .. ", needsGatesInit: " .. tostring(needsGatesInit) .. ", needsDoomstonesInit: " .. tostring(needsDoomstonesInit) .. ", needsGateVisionInit: " .. tostring(needsGateVisionInit) .. ", needsFastTravelInit: " .. tostring(needsFastTravelInit) .. ", needsClassSystemInit: " .. tostring(needsClassSystemInit))
     return true  -- Settings loaded successfully
 end
 
@@ -1674,6 +1686,54 @@ local function initializeGates()
         writeLog("Marked gates as initialized in settings file")
     else
         writeLog("Failed to write gates_initialized to settings file", "ERROR")
+    end
+end
+
+local function initializeDoomstones()
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then
+        return
+    end
+
+    local settingsPath = getArchipelagoPath(filePrefix .. "_settings.txt")
+    local file = io.open(settingsPath, "r")
+    if not file then
+        return
+    end
+
+    for line in file:lines() do
+        local key, value = line:match("^(.-)=(.*)$")
+        if key and value and key == "doomstones_initialized" and value == "True" then
+            file:close()
+            return
+        end
+    end
+    file:close()
+
+    local doomstoneChecksEnabled = true
+    file = io.open(settingsPath, "r")
+    if file then
+        for line in file:lines() do
+            local key, value = line:match("^(.-)=(.*)$")
+            if key and value and key == "doomstone_checks" then
+                doomstoneChecksEnabled = (value == "True")
+                break
+            end
+        end
+        file:close()
+    end
+
+    local enabledVal = doomstoneChecksEnabled and 1 or 0
+    console.ExecuteConsole("set APDoomstoneChecksEnabled to " .. tostring(enabledVal))
+    writeLog("Doomstones initialization complete - APDoomstoneChecksEnabled set to " .. tostring(enabledVal) .. " (doomstone_checks=" .. tostring(doomstoneChecksEnabled) .. ")")
+
+    file = io.open(settingsPath, "a")
+    if file then
+        file:write("doomstones_initialized=True\n")
+        file:close()
+        writeLog("Marked doomstones as initialized in settings file")
+    else
+        writeLog("Failed to write doomstones_initialized to settings file", "ERROR")
     end
 end
 
@@ -2425,18 +2485,6 @@ local function processItemQueue()
             else
                 writeLog("Failed to process Birth Sign item: " .. tostring(result), "ERROR")
             end
-        -- Handle Deathlink item - kill the player
-        elseif itemName == "Deathlink" then
-            writeLog("Processing Deathlink - killing player")
-            local success, result = pcall(function()
-                console.ExecuteConsole("player.kill")
-            end)
-            if success then
-                writeLog("Player killed by Deathlink")
-                table.insert(processedItems, itemName)
-            else
-                writeLog("Failed to execute Deathlink: " .. tostring(result), "ERROR")
-            end
         -- Handle Sidequest License items
         elseif itemName == "Wealth Sidequest License" then
             writeLog("Processing Wealth Sidequest License - setting wealth variable to 1")
@@ -2705,6 +2753,29 @@ local function processTrapQueue()
     end
 
     os.remove(trapsPath)
+end
+
+local function processDeathlinkSignal()
+    -- Inbound deathlink: read {prefix}_deathlink.txt from AP client.
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then return end
+
+    local deathlinkPath = getArchipelagoPath(filePrefix .. "_deathlink.txt")
+    local file = io.open(deathlinkPath, "r")
+    if not file then return end
+    file:close()
+
+    writeLog("Deathlink signal received - setting APDeathlink global")
+    local success, result = pcall(function()
+        console.ExecuteConsole("set APDeathlink to 1")
+    end)
+    if success then
+        writeLog("APDeathlink set to 1; in-game script will handle kill when safe")
+    else
+        writeLog("Failed to set APDeathlink: " .. tostring(result), "ERROR")
+    end
+
+    os.remove(deathlinkPath)
 end
 
 -- Check if a completion has already been recorded
@@ -3370,6 +3441,17 @@ function handleInitialization()
             writeLog("Gates initialization failed: " .. tostring(error), "ERROR")
         end
     end
+
+    if needsDoomstonesInit then
+        needsDoomstonesInit = false
+        local success, error = pcall(initializeDoomstones)
+        if success then
+            doomstonesInitialized = true
+            writeLog("Doomstone initialization complete")
+        else
+            writeLog("Doomstones initialization failed: " .. tostring(error), "ERROR")
+        end
+    end
     
     if needsGateVisionInit and gatesInitialized then
         needsGateVisionInit = false
@@ -3607,6 +3689,9 @@ local function handlePeriodicProcessing()
 
                 -- Process any pending traps
                 processTrapQueue()
+
+                -- Process incoming deathlink from AP client
+                processDeathlinkSignal()
             end
         end
         
