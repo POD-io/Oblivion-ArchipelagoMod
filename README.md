@@ -1,8 +1,10 @@
 ## Archipelago Mod for Oblivion Remastered
 
-A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/) support for Oblivion Remastered.
+A UE4SS and `.esp` mod that adds [Archipelago multiworld](https://archipelago.gg/) support for Oblivion Remastered.
 
-[Download Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
+**Required Downloads**
+- [Oblivion Archipelago Mod](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
+- [Oblivion Archipelago APWorld](https://github.com/POD-io/Oblivion-ArchipelagoWorld/releases/latest)
 
 ## All-in-One Installation (Option 1)
 
