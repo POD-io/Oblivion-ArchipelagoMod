@@ -7,13 +7,167 @@ local config = {
 }
 
 local onDeathCallback = nil
+local hooksRegistered = false
 local killedActors = {}
 local playerEngagedActors = {}
 local npcKilledActors = {}
 local lastPlayerSpellTime = 0
+local travelling = false
+local deathVfxHookBound = 0
+local chestScanEarliest = 0
+local SPELL_KILL_WINDOW = 6
+local SPELL_KILL_RANGE = 15000
+local ActorDetectionLog = nil
+
+function ActorDetection.SetLog(fn)
+    ActorDetectionLog = fn
+end
+
+local function adLog(msg, level)
+    if ActorDetectionLog then
+        ActorDetectionLog(msg, level or "INFO")
+    else
+        print("ArchipelagoBridge " .. tostring(msg))
+    end
+end
+
+function ActorDetection.SetTravelling(isTravelling)
+    travelling = isTravelling and true or false
+    if not travelling then
+        chestScanEarliest = os.clock() + 5
+    end
+end
+
+local function readWeaponTypeTag(weaponActor)
+    local tagStr = nil
+    pcall(function()
+        if not weaponActor or not weaponActor.IsValid or not weaponActor:IsValid() then
+            return
+        end
+        if not weaponActor.WeaponTypeTag then
+            return
+        end
+        local tag = weaponActor.WeaponTypeTag
+        local tagName = tag.TagName
+        if tagName and tagName.ToString then
+            tagStr = tostring(tagName:ToString())
+        end
+    end)
+    return tagStr
+end
+
+function ActorDetection.GetWeaponKind(attacker)
+    ActorDetection.lastWeaponDebug = { tag = "", bp = "", pairing = false }
+    if not attacker then
+        return "unarmed"
+    end
+    local pairing = nil
+    pcall(function() pairing = attacker.WeaponsPairingComponent end)
+    local pairingExists = false
+    pcall(function() pairingExists = pairing and pairing.IsValid and pairing:IsValid() end)
+    ActorDetection.lastWeaponDebug.pairing = pairingExists
+    local weapon = nil
+    pcall(function()
+        if pairingExists then
+            weapon = pairing.WeaponActor
+        end
+    end)
+    local valid = false
+    pcall(function() valid = weapon and weapon.IsValid and weapon:IsValid() end)
+    if not valid then
+        -- Pairing exists with no equipped WeaponActor: fists, not an unidentified weapon.
+        return "unarmed"
+    end
+    local tag = (readWeaponTypeTag(weapon) or ""):lower()
+    local bp = ""
+    pcall(function()
+        local fullName = weapon:GetFullName()
+        bp = (fullName:match("([^%.]+)$") or fullName):lower()
+    end)
+    ActorDetection.lastWeaponDebug.tag = tag
+    ActorDetection.lastWeaponDebug.bp = bp
+    if tag:find("bow", 1, true) or bp:find("bow", 1, true) then
+        return "bow"
+    end
+    if tag:find("staff", 1, true) or bp:find("staff", 1, true) then
+        return "staff"
+    end
+    local last = tag:match("([^.]+)$")
+    if last and last ~= "" and last ~= "weapontype" then
+        return last
+    end
+    if bp:find("sword", 1, true) then return "sword" end
+    if bp:find("mace", 1, true) then return "mace" end
+    if bp:find("axe", 1, true) then return "axe" end
+    if bp:find("dagger", 1, true) then return "dagger" end
+    if bp:find("hammer", 1, true) then return "hammer" end
+    if bp:find("blade", 1, true) then return "blade" end
+    return "unknown"
+end
+
+ActorDetection.WEAPON_CATEGORIES = {
+    dagger = "blade",
+    shortsword = "blade",
+    longsword = "blade",
+    claymore = "blade",
+    sword = "blade",
+    blade = "blade",
+    mace = "blunt",
+    hammer = "blunt",
+    warhammer = "blunt",
+    axe = "blunt",
+    battleaxe = "blunt",
+    waraxe = "blunt",
+    bow = "bow",
+    staff = "staff",
+    spell = "spell",
+    unarmed = "unarmed",
+}
+
+ActorDetection.loggedUnknownWeapons = {}
+
+function ActorDetection.WeaponCategory(kind)
+    local key = string.lower(tostring(kind or ""))
+    local category = ActorDetection.WEAPON_CATEGORIES[key]
+    if category then
+        return category
+    end
+    local dbg = ActorDetection.lastWeaponDebug or {}
+    local stamp = key .. "|" .. tostring(dbg.tag or "") .. "|" .. tostring(dbg.bp or "")
+    if not ActorDetection.loggedUnknownWeapons[stamp] then
+        ActorDetection.loggedUnknownWeapons[stamp] = true
+        print(string.format(
+            "ArchipelagoBridge unknown weapon kind=%s tag=%s bp=%s pairing=%s",
+            tostring(kind), tostring(dbg.tag), tostring(dbg.bp), tostring(dbg.pairing)))
+    end
+    return "unknown"
+end
+
+ActorDetection.KNOWN_WEAPON_KINDS = {
+    "unarmed",
+    "unknown",
+    "dagger",
+    "mace",
+    "shortsword",
+    "longsword",
+    "sword",
+    "claymore",
+    "bow",
+    "battleaxe",
+    "axe",
+    "waraxe",
+    "staff",
+    "spell",
+    "hammer",
+    "warhammer",
+    "blade",
+}
 
 local function getActorFormID(actor)
-    if not actor or not actor:IsValid() then return nil end
+    local okValid, valid = pcall(function()
+        return actor and actor.IsValid and actor:IsValid()
+    end)
+    if not okValid or not valid then return nil end
     local RefComp = actor.TESRefComponent or actor.RefComponent or actor.TESReferenceComponent
     if RefComp and RefComp:IsValid() then
         local RefForm = RefComp.FormIDInstance or (RefComp.GetFormIDInstance and pcall(function() return RefComp:GetFormIDInstance() end))
@@ -42,7 +196,15 @@ local function getActorLevel(actor)
     return level
 end
 
+function ActorDetection.IsSummoned(name)
+    if not name then return false end
+    return string.find(string.lower(tostring(name)), "bp_summon_", 1, true) ~= nil
+end
+
 local function OnEnemyDeath(enemyData, killer)
+    if ActorDetection.IsSummoned(enemyData and enemyData.name) then
+        return
+    end
     if onDeathCallback then
         onDeathCallback(enemyData, killer)
     end
@@ -50,69 +212,105 @@ end
 
 function ActorDetection.Initialize(callback)
     onDeathCallback = callback
+    print("ArchipelagoBridge ActorDetection 2026-09-01-A")
+    if hooksRegistered then return end
+    hooksRegistered = true
 
-    -- Primary kill hook: weapon / bow kills for all attackers.
-    -- Player kills are processed immediately; NPC kills are excluded
-    RegisterHook("/Script/Altar.VPairedPawn:OnCombatHitDealt", function(Context, HitEvent)
-        local hEvent = HitEvent:get()
-        local Attacker, Target = hEvent.Attacker, hEvent.Target
-        if not Attacker or not Target then return end
-        if Target:IsPlayerCharacter() then return end
+    RegisterHook("/Script/Altar.VPairedPawn:OnCombatHitDealt",
+        function() end,
+        function(Context, HitEvent)
+            pcall(function()
+                if travelling then return end
+                if not HitEvent then return end
+                local hEvent = HitEvent:get()
+                if not hEvent then return end
 
-        local actorKey = nil
-        pcall(function() actorKey = Target:GetFullName() end)
+                local Attacker, Target = nil, nil
+                pcall(function() Attacker = hEvent.Attacker end)
+                pcall(function() Target = hEvent.Target end)
+                if not Attacker or not Target then return end
 
-        local isDead = false
-        pcall(function() isDead = Target:IsDead() end)
+                local targetOk, attackerOk = false, false
+                pcall(function() targetOk = Target:IsValid() end)
+                pcall(function() attackerOk = Attacker:IsValid() end)
+                if not targetOk or not attackerOk then return end
 
-        local attackerIsPC = false
-        pcall(function() attackerIsPC = Attacker:IsPlayerCharacter() end)
+                local targetIsPC = false
+                pcall(function() targetIsPC = Target:IsPlayerCharacter() end)
+                if targetIsPC then return end
 
-        if not attackerIsPC then
-            -- NPC delivered the killing blow — exclude
-            if isDead and actorKey then npcKilledActors[actorKey] = true end
-            return
+                local actorKey = nil
+                pcall(function() actorKey = Target:GetFullName() end)
+
+                local isDead = false
+                pcall(function() isDead = Target:IsDead() end)
+
+                local attackerIsPC = false
+                pcall(function() attackerIsPC = Attacker:IsPlayerCharacter() end)
+
+                if not attackerIsPC then
+                    if isDead and actorKey then npcKilledActors[actorKey] = true end
+                    return
+                end
+
+                if not isDead then
+                    if actorKey then playerEngagedActors[actorKey] = true end
+                    return
+                end
+
+                if actorKey then
+                    if killedActors[actorKey] then return end
+                    killedActors[actorKey] = true
+                end
+
+                local formID = getActorFormID(Target)
+                if not formID then return end
+
+                local loc = nil
+                pcall(function() loc = Target:K2_GetActorLocation() end)
+                if not loc then return end
+
+                local weaponType = ActorDetection.GetWeaponKind(Attacker)
+                local spellAge = lastPlayerSpellTime > 0 and (os.time() - lastPlayerSpellTime) or nil
+                if weaponType == "unarmed" and spellAge and spellAge <= SPELL_KILL_WINDOW then
+                    weaponType = "spell"
+                end
+
+                OnEnemyDeath({
+                    formID = formID,
+                    name = getActorName(Target),
+                    level = getActorLevel(Target),
+                    playerLevel = getActorLevel(Attacker),
+                    location = loc,
+                    weaponType = weaponType,
+                }, Attacker)
+            end)
         end
+    )
 
-        if not isDead then
-            if actorKey then playerEngagedActors[actorKey] = true end
-            return
-        end
-
-        if actorKey then
-            if killedActors[actorKey] then return end
-            killedActors[actorKey] = true
-        end
-
-        local formID = getActorFormID(Target)
-        if formID then
-            OnEnemyDeath({
-                actor = Target, formID = formID, name = getActorName(Target),
-                level = getActorLevel(Target), location = Target:K2_GetActorLocation()
-            }, Attacker)
-        end
-    end)
-
-    -- Track when the player casts a spell so OnDeathVFX can attribute nearby deaths.
     RegisterHook("/Script/Altar.VPairedPawn:SendSpellCast", function(Context)
         pcall(function()
+            if travelling then return end
             local pawn = Context:get()
             if not pawn or not pawn:IsValid() then return end
             local isPC = false
             pcall(function() isPC = pawn:IsPlayerCharacter() end)
-            if isPC then lastPlayerSpellTime = os.time() end
+            if isPC then
+                lastPlayerSpellTime = os.time()
+            end
         end)
     end)
 
-    -- Secondary hooks: OnDeathVFX fires for spell kills
     local magicHookPaths = {
+        "/Script/Altar.VPairedPawn:OnDeathVFX",
         "/Game/Dev/NPCs/BP_Generic_NPC.BP_Generic_NPC_C:OnDeathVFX",
         "/Game/Dev/Creatures/BP_Generic_Creature.BP_Generic_Creature_C:OnDeathVFX",
     }
     for _, hookPath in ipairs(magicHookPaths) do
-        pcall(function()
+        local ok, err = pcall(function()
             RegisterHook(hookPath, function(Context)
                 pcall(function()
+                    if travelling then return end
                     local target = Context:get()
                     if not target or not target:IsValid() then return end
 
@@ -141,23 +339,43 @@ function ActorDetection.Initialize(callback)
                         (targetLoc.Y - playerLoc.Y)^2 +
                         (targetLoc.Z - playerLoc.Z)^2
                     )
-                    if dist > 8000 then return end
+                    if dist > SPELL_KILL_RANGE then return end
 
-                    local isSpellKill = (os.time() - lastPlayerSpellTime) <= 3 and dist <= 2000
+                    local isSpellKill = lastPlayerSpellTime > 0
+                        and (os.time() - lastPlayerSpellTime) <= SPELL_KILL_WINDOW
+                        and dist <= SPELL_KILL_RANGE
                     if not playerEngagedActors[actorKey] and not isSpellKill then return end
 
                     killedActors[actorKey] = true
+                    local weaponType = "unarmed"
+                    if isSpellKill then
+                        weaponType = "spell"
+                    else
+                        weaponType = ActorDetection.GetWeaponKind(player)
+                    end
                     OnEnemyDeath({
-                        actor = target, formID = formID,
-                        name = shortName, level = getActorLevel(target), location = targetLoc
+                        formID = formID,
+                        name = shortName,
+                        level = getActorLevel(target),
+                        playerLevel = getActorLevel(player),
+                        location = targetLoc,
+                        weaponType = weaponType,
                     }, player)
                 end)
             end)
         end)
+        if ok then
+            deathVfxHookBound = deathVfxHookBound + 1
+            adLog("OnDeathVFX hook bound: " .. hookPath)
+        else
+            adLog("OnDeathVFX hook FAILED: " .. hookPath .. " " .. tostring(err), "WARN")
+        end
+    end
+    if deathVfxHookBound == 0 then
+        adLog("No OnDeathVFX hooks bound — spell kills that miss combat-hit will not credit", "WARN")
     end
 end
 
--- Reset kill state on cell transition
 function ActorDetection.ClearKilledActors()
     killedActors = {}
     playerEngagedActors = {}
@@ -165,52 +383,55 @@ function ActorDetection.ClearKilledActors()
     lastPlayerSpellTime = 0
 end
 
--- Sphere scan for nearby containers used by boss-chest tracking
+-- VContainer instances only.
 function ActorDetection.DetectNearbyContainers(radius)
+    if travelling then return {} end
+    if os.clock() < chestScanEarliest then return {} end
     radius = radius or config.detectionRadius
 
     local player = UEHelpers:GetPlayer()
-    if not player or not player:IsValid() then return {} end
+    local playerValid = false
+    pcall(function()
+        playerValid = player and player.IsValid and player:IsValid()
+    end)
+    if not playerValid then return {} end
 
-    local actorClass = StaticFindObject("/Script/Engine.Actor")
-    if not actorClass then return {} end
+    local playerLoc = nil
+    pcall(function() playerLoc = player:K2_GetActorLocation() end)
+    if not playerLoc then return {} end
 
-    local actorList = {}
-    local playerLoc = player:K2_GetActorLocation()
-    local kismetSystem = UEHelpers.GetKismetSystemLibrary()
-    local worldContext = UEHelpers.GetWorldContextObject()
-    if not kismetSystem or not worldContext then return {} end
-
-    kismetSystem:SphereOverlapActors(worldContext, playerLoc, radius, {}, actorClass, { player }, actorList)
+    local instances = nil
+    pcall(function()
+        instances = FindAllOf("VContainer")
+    end)
+    if not instances then return {} end
 
     local containers = {}
-    for _, actorRef in ipairs(actorList) do
+    for _, actor in ipairs(instances) do
         pcall(function()
-            local actor = actorRef:get()
             if not actor then return end
-            local isValid = false
-            pcall(function() isValid = actor:IsValid() end)
-            if not isValid then return end
-            local fullName = ""
-            pcall(function() fullName = actor:GetFullName() end)
+            local fullName = actor:GetFullName() or ""
             if fullName == "" then return end
-            if fullName:match("Chest") or fullName:match("Coffin") or fullName:match("Barrel") or
+            if not (fullName:match("Chest") or fullName:match("Coffin") or fullName:match("Barrel") or
                fullName:match("Crate") or fullName:match("Container") or fullName:match("Sack") or
-               fullName:match("Urn") then
-                local formID = getActorFormID(actor)
-                local name = getActorName(actor)
-                local location = nil
-                pcall(function() location = actor:K2_GetActorLocation() end)
-                if formID and location then
-                    containers[formID] = {
-                        actor = actor,
-                        formID = formID,
-                        name = name,
-                        location = location,
-                        fullName = fullName
-                    }
-                end
+               fullName:match("Urn")) then
+                return
             end
+            local location = actor:K2_GetActorLocation()
+            if not location then return end
+            local dx = location.X - playerLoc.X
+            local dy = location.Y - playerLoc.Y
+            local dz = location.Z - playerLoc.Z
+            if (dx * dx + dy * dy + dz * dz) > (radius * radius) then
+                return
+            end
+            local formID = getActorFormID(actor) or fullName
+            containers[formID] = {
+                formID = formID,
+                name = fullName:match("([^%.]+)$") or fullName,
+                location = location,
+                fullName = fullName
+            }
         end)
     end
     return containers

@@ -4,73 +4,65 @@
     Integrates Oblivion Remastered with the Archipelago multiworld randomizer.
     Handles receiving items from other players and sending completion status back.
     
-    Features:
-    - Processes items received from the Archipelago client
-    - Automatically adds shrine offerings when receiving shrine tokens (if enabled)
-    - Tracks quest completion status for the randomizer
-    - Uses console commands for game state changes
-    
-    File Communication:
-    - Uses text files in the user's save directory for communication with the Archipelago client
-    - Supports multiple connection sessions via file prefixes
-    - Logs all activity for debugging purposes
+
 --]]
 
 local UEHelpers = require("UEHelpers")
 local config = require("ArchipelagoConfig")
 local console = require("OBRConsole")
 
-local function safePrint(s)
-    print(tostring(s):gsub("[^\32-\126]", "?"))
+
+local function runPathDebug()
+    local function safePrint(s)
+        print(tostring(s):gsub("[^\32-\126]", "?"))
+    end
+    print("========================================")
+    print("ARCHIPELAGO PATH DEBUG START")
+    print("========================================")
+    local ap_userprofile = os.getenv("USERPROFILE")
+    safePrint("USERPROFILE = " .. tostring(ap_userprofile))
+    local ap_default_dir = tostring(ap_userprofile) .. "\\Documents\\My Games\\Oblivion Remastered\\Saved\\Archipelago"
+    safePrint("DEFAULT_ARCHIPELAGO_DIR = " .. ap_default_dir)
+    local ap_test_connection = ap_default_dir .. "\\current_connection.txt"
+    local ap_test_override = ap_default_dir .. "\\path_override.txt"
+    print("Checking current_connection.txt")
+    safePrint("PATH = " .. ap_test_connection)
+    local f = io.open(ap_test_connection, "r")
+    if f then
+        print("RESULT = FOUND")
+        f:close()
+    else
+        print("RESULT = NOT FOUND")
+    end
+    print("Checking path_override.txt")
+    safePrint("PATH = " .. ap_test_override)
+    f = io.open(ap_test_override, "r")
+    if f then
+        print("RESULT = FOUND")
+        local line = f:read("*line")
+        safePrint("CONTENTS = " .. tostring(line))
+        f:close()
+    else
+        print("RESULT = NOT FOUND")
+    end
+    print("========================================")
+    print("ARCHIPELAGO PATH DEBUG END")
+    print("========================================")
 end
-
-print("========================================")
-print("ARCHIPELAGO PATH DEBUG START")
-print("========================================")
-
-local ap_userprofile = os.getenv("USERPROFILE")
-safePrint("USERPROFILE = " .. tostring(ap_userprofile))
-
-local ap_default_dir = tostring(ap_userprofile) .. "\\Documents\\My Games\\Oblivion Remastered\\Saved\\Archipelago"
-safePrint("DEFAULT_ARCHIPELAGO_DIR = " .. ap_default_dir)
-
-local ap_test_connection = ap_default_dir .. "\\current_connection.txt"
-local ap_test_override = ap_default_dir .. "\\path_override.txt"
-print("Checking current_connection.txt")
-safePrint("PATH = " .. ap_test_connection)
-
-local f = io.open(ap_test_connection, "r")
-if f then
-    print("RESULT = FOUND")
-    f:close()
-else
-    print("RESULT = NOT FOUND")
-end
-
-print("Checking path_override.txt")
-safePrint("PATH = " .. ap_test_override)
-
-f = io.open(ap_test_override, "r")
-if f then
-    print("RESULT = FOUND")
-
-    local line = f:read("*line")
-    safePrint("CONTENTS = " .. tostring(line))
-
-    f:close()
-else
-    print("RESULT = NOT FOUND")
-end
-
-print("========================================")
-print("ARCHIPELAGO PATH DEBUG END")
-print("========================================")
+runPathDebug()
 
 -- ActorDetection module
 local ActorDetection = nil
 local killTrackingEnabled = false
 local hasDungeonKillChecks = false
 local hasOverworldKillChecks = false
+local dungeonKillsPerCheck = 1
+local overworldKillsPerCheck = 1
+local killProgress = { dungeon = 0, overworld = 0, oblivion = 0 }
+local killProgressLoaded = false
+local pendingWarpMarker = nil
+local WARP_FALLBACK_MARKER = "ICPrisonSewerMapMarker"
+local skillXpApplied = false
 
 -- Periodic tracking state
 local nirnrootTrackingEnabled = false
@@ -92,6 +84,39 @@ local pendingIcarianFlight = false
 local pendingMarkerClear = false
 local pendingCellLookup = false
 local pendingAutoTrack = nil
+local pendingNirnrootRedetect = false
+local state = {
+    unstableSeconds = 0.5,
+    unstableUntil = 0,
+    travelling = false,
+    fenceLimit = 0,
+    fadeWorldSetup = false,
+    apSyncOnStable = false,
+    firstInit = false,
+    periodMs = 250,
+    nextPeriodAt = 0,
+    nextSessionAt = 0,
+    started = false,
+    cellPending = false,
+    loggedSkip = false,
+    kills = {},
+    gameStarted = false,
+    notificationHookRegistered = false,
+    allowAPSync = false,
+    probeStartedForSession = false,
+    pinsNeedRestore = true,
+    pinsRestoreArmed = false,
+    bountyProgressReady = false,
+    hasOblivionKillChecks = false,
+    oblivionKills = 0,
+    oblivionKillsPerCheck = 2,
+    oblivionKillsPerGate = 0,
+    gateCount = 0,
+    lastGateKillWarnKey = "",
+    weaponLock = false,
+    weaponLicenses = {},
+    tutorialWidget = nil,
+}
 -- When the player manually F11s to OFF, ALL auto-track is turned off until F11 cycles back.
 local autoTrackManualOff = false
 -- Set by APAutoTrackNirnOff message
@@ -154,10 +179,15 @@ local archipelagoSettings = {
     dungeon_warp = "off", -- "off", "on", "item", or "early_item"
     auto_tracking = false,      -- Automatically switch compass tracking on cell transitions
     silent_auto_tracking = false, -- do not show "Message" notifications for tracking
+    ap_tips = true,
+    skill_xp_multiplier = 1,
 }
 
 -- Queue for displaying messages when multiple items are processed
 local messageboxQueue = {}
+local BULK_ITEM_THRESHOLD = 30
+local bulkItemGrantInProgress = false
+local loggedInventoryNotifyDefault = false
 
 -- Path + logging helpers
 local function getArchipelagoPath(filename)
@@ -187,22 +217,40 @@ local function writeLog(message, level)
     end
 end
 
--- Session flags to track initialization status
-local progressiveShopStockInitialized = false
-local arenaInitialized = false
-local shrinesInitialized = false
-local sidequestsInitialized = false
-local gatesInitialized = false
-local doomstonesInitialized = false
-local gateVisionInitialized = false
-local fastTravelInitialized = false
-local classSystemInitialized = false
-local modFullyInitialized = false
-local encumbranceScalingApplied = false
+local init = {
+    shopStock = false,
+    arena = false,
+    shrines = false,
+    sidequests = false,
+    gates = false,
+    doomstones = false,
+    gateVision = false,
+    fastTravel = false,
+    classSystem = false,
+    dungeonCounters = false,
+    bounties = false,
+    weaponLicenses = false,
+    modFully = false,
+    encumbrance = false,
+    needsShopStock = false,
+    needsArena = false,
+    needsShrines = false,
+    needsSidequests = false,
+    needsGates = false,
+    needsDoomstones = false,
+    needsGateVision = false,
+    needsFastTravel = false,
+    needsClassSystem = false,
+    needsDungeonCounters = false,
+    needsBounties = false,
+    needsWeaponLicenses = false,
+    initializationCompleteTime = 0,
+    itemProcessingEnabled = false,
+}
 
 -- apply Encumbrance fix once per session
 local function applyEncumbranceScaling()
-    if encumbranceScalingApplied then return true end
+    if init.encumbrance then return true end
     local ok, result = pcall(function()
         local obj = StaticFindObject(ENCUMBRANCE_SETTINGS_OBJ)
         if obj and obj:IsValid() then
@@ -212,7 +260,7 @@ local function applyEncumbranceScaling()
         return false
     end)
     if ok and result then
-        encumbranceScalingApplied = true
+        init.encumbrance = true
         writeLog(string.format("Encumbrance scaling applied: DefaultStrengthEncumbranceMult = %d", ENCUMBRANCE_MULT))
         return true
     end
@@ -223,7 +271,7 @@ end
 local lastEncumbranceValidation = 0
 local ENCUMBRANCE_VALIDATION_INTERVAL = 120  -- seconds between validation checks
 local function validateEncumbranceScaling()
-    if not encumbranceScalingApplied then return end  -- not applied yet; retry path handles this
+    if not init.encumbrance then return end  -- not applied yet; retry path handles this
     local ok, currentValue = pcall(function()
         local obj = StaticFindObject(ENCUMBRANCE_SETTINGS_OBJ)
         if obj and obj:IsValid() then
@@ -235,7 +283,7 @@ local function validateEncumbranceScaling()
         if currentValue ~= ENCUMBRANCE_MULT then
             writeLog(string.format("Encumbrance validation failed (current=%s, expected=%d) — reapplying",
                 tostring(currentValue), ENCUMBRANCE_MULT), "WARNING")
-            encumbranceScalingApplied = false
+            init.encumbrance = false
             applyEncumbranceScaling()
         end
     end
@@ -243,27 +291,10 @@ end
 
 pcall(applyEncumbranceScaling)
 
--- Initialization flags
-local needsProgressiveShopStockInit = false
-local needsArenaInit = false
-local needsShrinesInit = false
-local needsSidequestsInit = false
-local needsGatesInit = false
-local needsDoomstonesInit = false
-local needsGateVisionInit = false
-local needsFastTravelInit = false
-local needsClassSystemInit = false
-local needsDungeonCountersInit = false
-local dungeonCountersInitialized = false
 local hasShownNoSettingsMessage = false
 -- Track if we showed the "no connection file" message and if a connection follow-up was shown
 local hadNoConnectionMessage = false
 local hasShownConnectionEstablished = false
-
-
--- Frame counter for periodic item processing (every 5 seconds at 60fps)
-local frameCounter = 0
-local targetFrames = 300
 
 
 -- Current goal from settings file
@@ -306,7 +337,9 @@ end
 
 local function processMessageboxQueue()
     if #messageboxQueue == 0 then return end
-    
+    if state.travelling or state.isWorldUnstable() then
+        return
+    end
     local message = table.remove(messageboxQueue, 1)
     console.ExecuteConsole("MessageBox \"" .. message .. "\"")
 end
@@ -340,7 +373,10 @@ local pendingMenuReinitCheck = false
 local cellLookupProbe = {
     awaiting = false,
     lastCount = 0,
-    foundFormID = nil
+    foundFormID = nil,
+    startedAt = nil,
+    blockStartedAt = nil,
+    circularBufferMode = false,
 }
 local currentCellName = nil
 local currentCellEditorID = nil  -- EditorID from CSV lookup (used to detect Oblivion interiors)
@@ -354,9 +390,20 @@ pcall(function()
 end)
 
 local function apFindConsole()
-    if apProbe.console and apProbe.console:IsValid() then return apProbe.console end
+    local cachedOk = false
+    pcall(function()
+        if apProbe.console and apProbe.console:IsValid() then
+            cachedOk = true
+        end
+    end)
+    if cachedOk then return apProbe.console end
+    apProbe.console = nil
     local inst = FindFirstOf("Console")
-    if inst and inst:IsValid() then 
+    local valid = false
+    pcall(function()
+        if inst and inst:IsValid() then valid = true end
+    end)
+    if valid then
         apProbe.console = inst
     end
     return apProbe.console
@@ -487,6 +534,9 @@ local function processPendingMenuReinitCheck()
 
     if isMainMenuFalsePositive(hour, cell) then
         writeLog("Ignoring APAppliedCount=0: main menu (GameHour=1.00, no cell)")
+        state.pinsNeedRestore = true
+        state.pinsRestoreArmed = false
+        skillXpApplied = false
         if reinitPending then
             writeLog("Clearing stale reinitPending: player returned to main menu")
             reinitPending = false
@@ -515,9 +565,11 @@ local function apProbeEmitCount(value)
         local ingameCount = value
         local diskCount = getBridgeStatusAPCount()
         local diff = diskCount - ingameCount
-        writeLog("AP sync: in-game=" .. countStr .. ", bridge=" .. tostring(diskCount) .. ", diff=" .. tostring(diff))
+        if diff ~= 0 then
+            writeLog("AP sync: in-game=" .. countStr .. ", bridge=" .. tostring(diskCount) .. ", diff=" .. tostring(diff))
+        end
 
-        if ingameCount == 0 and modFullyInitialized and not suppressReinitOnNextZero then
+        if ingameCount == 0 and init.modFully and not suppressReinitOnNextZero then
             pendingMenuReinitCheck = true
             startMenuCheckProbe()
             if menuCheckInProgress() then
@@ -641,97 +693,327 @@ end
 
 local lookupCellNameByFormID
 
--- Cell lookup functions (same pattern as AP sync probe)
-local function readCellLookupConsole()
+local shouldAutoTrack
+local disableAllAutoTrack
+local enableBossChestTracking
+local enableNirnrootTracking
+local clearAPXMarker
+local tryEnableChestTrackingForCurrentCell
+
+-- Random-gate Sigillum Sanguis only. Side towers (Sorrow/Anguish *LeftLord/*RightLord) are switches, not the close.
+local function isRandomGateSigillum(editorID)
+    editorID = editorID or ""
+    if editorID:find("^OblivionRD") == nil or editorID:find("Lord") == nil then
+        return false
+    end
+    if editorID:find("LeftLord") or editorID:find("RightLord") then
+        return false
+    end
+    return true
+end
+
+function state.maybeWarnLastAccessibleGate(editorID)
+    editorID = editorID or ""
+    if not isRandomGateSigillum(editorID) then
+        state.lastGateKillWarnKey = ""
+        return
+    end
+    if (state.oblivionKills or 0) <= 0 or (state.gateCount or 0) <= 0 then
+        return
+    end
+    local filePrefix = getCurrentFilePrefix and getCurrentFilePrefix()
+    if not filePrefix then
+        return
+    end
+    local keysHeld = 0
+    local statusFile = io.open(getArchipelagoPath(filePrefix .. "_bridge_status.txt"), "r")
+    if statusFile then
+        local content = statusFile:read("*a") or ""
+        statusFile:close()
+        for token in content:gmatch("([^,]+)") do
+            if (token:match("^%s*(.-)%s*$") or "") == "Oblivion Gate Key" then
+                keysHeld = keysHeld + 1
+            end
+        end
+    end
+    if keysHeld <= 0 then
+        return
+    end
+    local closed = 0
+    local oblivionChecked = 0
+    local completedFile = io.open(getArchipelagoPath(filePrefix .. "_completed.txt"), "r")
+    if completedFile then
+        for line in completedFile:lines() do
+            local stored = (line or ""):gsub("\r", ""):match("^%s*(.-)%s*$") or ""
+            if stored == "Oblivion Gate Closed" then
+                closed = closed + 1
+            elseif stored == "Oblivion Kill" or stored:match("^Oblivion Kill %d+$") then
+                oblivionChecked = oblivionChecked + 1
+            end
+        end
+        completedFile:close()
+    end
+    if (closed + 1) < keysHeld then
+        return
+    end
+    local perGate = state.oblivionKillsPerGate or 0
+    local remainingInLogic = 0
+    for i = 1, state.oblivionKills do
+        local required = 1
+        if perGate > 0 then
+            required = math.ceil(i / perGate)
+        end
+        if required <= keysHeld and i > oblivionChecked then
+            remainingInLogic = remainingInLogic + 1
+        end
+    end
+    if remainingInLogic <= 0 then
+        return
+    end
+    local warnKey = editorID .. "|" .. tostring(keysHeld) .. "|" .. tostring(closed)
+    if state.lastGateKillWarnKey == warnKey then
+        return
+    end
+    state.lastGateKillWarnKey = warnKey
+    queueMessagebox("Beware, you are about to close the last accessible Gate and you still have Oblivion kill checks remaining. ")
+end
+
+-- Cell lookup: console player.getparentcell prints Cell: <hex>.
+-- CSV maps that FormID to the TES cell name. UE world names are not TES cells.
+function state.applyResolvedCellFormID(formID)
+    cellLookupProbe.foundFormID = formID:upper()
+    cellLookupProbe.awaiting = false
+    cellLookupProbe.startedAt = nil
+    cellLookupProbe.blockStartedAt = nil
+    cellLookupProbe.circularBufferMode = false
+    cellNameRequestPending = false
+    pendingCellLookup = false
+
+    local cellName, cellEditorID = lookupCellNameByFormID(cellLookupProbe.foundFormID)
+    if cellName then
+        currentCellName = cellName
+        currentCellEditorID = cellEditorID or ""
+        currentCellIsOblivion = currentCellEditorID:find("Oblivion") ~= nil
+        if currentCellIsOblivion then
+            writeLog("Cell resolved as Oblivion interior: " .. cellName .. " (" .. currentCellEditorID .. ")")
+            if shouldAutoTrack() then
+                disableAllAutoTrack()
+                if apProbe.awaiting then
+                    pendingMarkerClear = true
+                else
+                    clearAPXMarker()
+                end
+            end
+        else
+            writeLog("Cell resolved: " .. cellName .. " (" .. tostring(currentCellEditorID) .. ")")
+            if shouldAutoTrack() and chestInSeed then
+                if apProbe.awaiting then
+                    pendingAutoTrack = "boss"
+                else
+                    tryEnableChestTrackingForCurrentCell()
+                end
+            end
+        end
+    else
+        local worldFull = ""
+        pcall(function()
+            local ply = UEHelpers:GetPlayer()
+            if ply and ply:IsValid() then
+                worldFull = ply:GetWorld():GetFullName() or ""
+            end
+        end)
+        if worldFull:lower():find("oblivion") then
+            local mapName = worldFull:match("/([^/]+)%.") or worldFull:match("/([^/]+)$") or "Oblivion Plane"
+            currentCellName = mapName
+            currentCellEditorID = ""
+            currentCellIsOblivion = true
+            writeLog("Cell not in CSV but world name indicates Oblivion: " .. mapName .. " (FormID: " .. cellLookupProbe.foundFormID .. ")")
+        elseif state.matchCityWorld(worldFull) then
+            currentCellName = state.matchCityWorld(worldFull)
+            currentCellEditorID = ""
+            currentCellIsOblivion = false
+            writeLog("City world (FormID not in CSV): " .. currentCellName .. " (" .. cellLookupProbe.foundFormID .. ")")
+        else
+            currentCellName = "Unknown Cell (FormID: " .. cellLookupProbe.foundFormID .. ")"
+            currentCellEditorID = ""
+            currentCellIsOblivion = false
+            writeLog("Cell FormID not in oblivion_cell_database.csv: " .. cellLookupProbe.foundFormID .. " world='" .. worldFull .. "' — add this row to the CSV. Using fallback name.", "WARNING")
+        end
+    end
+    state.cellPending = false
+    state.flushPendingKills()
+    state.maybeWarnLastAccessibleGate(currentCellEditorID)
+end
+
+function state.readCellLookupConsole()
     local inst = apFindConsole()
     if not inst or not cellLookupProbe.awaiting then return end
-    
-    local newCount = inst.OutputBufferSize
-    
+
+    local newCount = inst.OutputBufferSize or 0
+    local startIdx, endIdx
     if newCount > cellLookupProbe.lastCount then
-        -- Read new lines
-        for i = cellLookupProbe.lastCount, newCount - 1 do
-            local line = inst.OutputBuffer[i+1]:ToString()
-            
-            -- Look for FormID pattern "Cell: 000a7543"
+        startIdx = cellLookupProbe.lastCount
+        endIdx = newCount - 1
+    elseif newCount < cellLookupProbe.lastCount then
+        startIdx = 0
+        endIdx = newCount - 1
+    elseif cellLookupProbe.circularBufferMode and newCount >= 1024 then
+        startIdx = math.max(0, newCount - 20)
+        endIdx = newCount - 1
+    else
+        return
+    end
+
+    for i = startIdx, endIdx do
+        local line = nil
+        pcall(function()
+            line = inst.OutputBuffer[i + 1]:ToString()
+        end)
+        if line then
             local formID = line:match("Cell:%s*(%x+)")
             if formID then
-                cellLookupProbe.foundFormID = formID:upper()
-                cellLookupProbe.awaiting = false
-                cellNameRequestPending = false
-                
-                -- Resolve FormID to a cell name + EditorID and cache both.
-                -- On failure (FormID not in CSV), currentCellName stays nil and
-                -- getCurrentCellName() will fall back to the world name (L_PersistentDungeon).
-                local cellName, cellEditorID = lookupCellNameByFormID(cellLookupProbe.foundFormID)
-                if cellName then
-                    currentCellName = cellName
-                    currentCellEditorID = cellEditorID or ""
-                    -- Detect Oblivion interior cells by EditorID pattern
-                    currentCellIsOblivion = currentCellEditorID:find("Oblivion") ~= nil
-                    if currentCellIsOblivion then
-                        writeLog("Cell resolved as Oblivion interior: " .. cellName .. " (" .. currentCellEditorID .. ")")
-                        if shouldAutoTrack() then
-                            disableAllAutoTrack()
-                            if apProbe.awaiting then
-                                pendingMarkerClear = true
-                            else
-                                clearAPXMarker()
-                            end
-                        end
-                    else
-                        writeLog("Cell resolved: " .. cellName .. " (" .. tostring(currentCellEditorID) .. ")")
-                        if shouldAutoTrack() and chestInSeed then
-                            if apProbe.awaiting then
-                                pendingAutoTrack = "boss"
-                            else
-                                enableBossChestTracking()
-                            end
-                        end
-                    end
-                else
-                    -- FormID not in CSV: check the live world name before falling back.
-                    -- Oblivion worldspace exterior cells won't be in the CSV but the world
-                    -- name will contain "oblivion", so we can still classify them correctly.
-                    local worldFull = ""
-                    pcall(function()
-                        local p = UEHelpers:GetPlayer()
-                        if p and p:IsValid() then
-                            worldFull = p:GetWorld():GetFullName() or ""
-                        end
-                    end)
-                    if worldFull:lower():find("oblivion") then
-                        local mapName = worldFull:match("/([^/]+)%.") or worldFull:match("/([^/]+)$") or "Oblivion Plane"
-                        currentCellName = mapName
-                        currentCellEditorID = ""
-                        currentCellIsOblivion = true
-                        writeLog("Cell not in CSV but world name indicates Oblivion: " .. mapName .. " (FormID: " .. cellLookupProbe.foundFormID .. ")")
-                    else
-                        -- Genuinely unknown cell; store FormID for debug logging.
-                        currentCellName = "Unknown Cell (FormID: " .. cellLookupProbe.foundFormID .. ")"
-                        currentCellEditorID = ""
-                        currentCellIsOblivion = false
-                        writeLog("Cell FormID not in database: " .. cellLookupProbe.foundFormID .. " — using fallback name")
-                    end
-                end
+                state.applyResolvedCellFormID(formID)
+                cellLookupProbe.lastCount = newCount
                 return
             end
         end
     end
-    
+
     cellLookupProbe.lastCount = newCount
 end
 
-local function startCellLookup()
+function state.startCellLookup()
     apFindConsole()
     local inst = apProbe.console
-    if not inst then return end
-    
+    if not inst then
+        writeLog("Cell lookup waiting: console unavailable")
+        pendingCellLookup = true
+        if not cellLookupProbe.blockStartedAt then
+            cellLookupProbe.blockStartedAt = os.clock()
+        end
+        return
+    end
     cellLookupProbe.awaiting = true
-    cellLookupProbe.lastCount = inst.OutputBufferSize
+    cellLookupProbe.startedAt = os.clock()
+    cellLookupProbe.blockStartedAt = nil
+    cellLookupProbe.lastCount = inst.OutputBufferSize or 0
+    cellLookupProbe.circularBufferMode = cellLookupProbe.lastCount >= 1024
     cellLookupProbe.foundFormID = nil
-    
-    console.ExecuteConsole("player.getparentcell")
+    cellNameRequestPending = true
+    pendingCellLookup = false
+    writeLog("Cell lookup: player.getparentcell")
+    local ok, err = pcall(function()
+        console.ExecuteConsole("player.getparentcell")
+    end)
+    if not ok then
+        writeLog("player.getparentcell failed: " .. tostring(err), "ERROR")
+        cellLookupProbe.awaiting = false
+        cellNameRequestPending = false
+        pendingCellLookup = true
+    end
+end
+
+function state.currentWorldFullName()
+    local worldName = ""
+    pcall(function()
+        local player = UEHelpers:GetPlayer()
+        if not player or not player:IsValid() then return end
+        local world = player:GetWorld()
+        if not world or not world:IsValid() then return end
+        worldName = world:GetFullName() or ""
+    end)
+    return worldName
+end
+
+function state.matchCityWorld(worldName)
+    if not worldName or worldName == "" then
+        return nil
+    end
+    local cities = state.cityWorlds
+    if not cities then
+        cities = {
+            { "ICImperialPalaceMQ16", "Imperial City" },
+            { "ICTempleDistrictMQ16", "Imperial City" },
+            { "ICTheArcaneUniversity", "Imperial City" },
+            { "ICImperialPrisonDistrict", "Imperial City" },
+            { "ICElvenGardensDistrict", "Imperial City" },
+            { "ICArboretumDistrict", "Imperial City" },
+            { "ICTalosPlazaDistrict", "Imperial City" },
+            { "ICImperialPalace", "Imperial City" },
+            { "ICMarketDistrict", "Imperial City" },
+            { "ICTempleDistrict", "Imperial City" },
+            { "ICArenaDistrict", "Imperial City" },
+            { "CheydinhalWorld", "Cheydinhal" },
+            { "LeyawiinWorld", "Leyawiin" },
+            { "SkingradWorld", "Skingrad" },
+            { "KvatchEntrance", "Kvatch" },
+            { "ChorrolWorld", "Chorrol" },
+            { "BravilWorld", "Bravil" },
+            { "KvatchPlaza", "Kvatch" },
+            { "KvatchEast", "Kvatch" },
+            { "AnvilWorld", "Anvil" },
+            { "BrumaWorld", "Bruma" },
+        }
+        state.cityWorlds = cities
+    end
+    for _, row in ipairs(cities) do
+        if worldName:find(row[1], 1, true) then
+            return row[2]
+        end
+    end
+    return nil
+end
+
+
+function state.finishCellLookup(cellName, editorID, isOblivion, reason)
+    currentCellName = cellName
+    currentCellEditorID = editorID or ""
+    currentCellIsOblivion = isOblivion and true or false
+    cellLookupProbe.awaiting = false
+    cellLookupProbe.startedAt = nil
+    cellLookupProbe.blockStartedAt = nil
+    cellLookupProbe.foundFormID = nil
+    cellNameRequestPending = false
+    pendingCellLookup = false
+    state.cellPending = false
+    writeLog(reason, "WARNING")
+    if state.flushPendingKills then
+        state.flushPendingKills()
+    end
+end
+
+function state.expireCellLookupIfStuck()
+    local waiting = cellLookupProbe.awaiting or cellNameRequestPending or pendingCellLookup or state.cellPending
+    if not waiting then
+        cellLookupProbe.blockStartedAt = nil
+        return
+    end
+    local started = cellLookupProbe.startedAt or cellLookupProbe.blockStartedAt
+    if not started then
+        cellLookupProbe.blockStartedAt = os.clock()
+        return
+    end
+    if (os.clock() - started) < 3.0 then
+        return
+    end
+    local world = state.currentWorldFullName()
+    local formId = cellLookupProbe.foundFormID or "(none)"
+    if world:find("Tamriel") then
+        state.finishCellLookup("Tamriel", "", false,
+            "Cell lookup timed out after " .. tostring(3.0) .. "s. world='" .. world .. "' formID=" .. tostring(formId) .. " — falling back to Tamriel")
+    elseif world:lower():find("oblivion") then
+        local mapName = world:match("/([^/]+)%.") or world:match("/([^/]+)$") or "Oblivion Plane"
+        state.finishCellLookup(mapName, "", true,
+            "Cell lookup timed out. world='" .. world .. "' formID=" .. tostring(formId) .. " — Oblivion fallback")
+    elseif state.matchCityWorld(world) then
+        local cityName = state.matchCityWorld(world)
+        state.finishCellLookup(cityName, "", false,
+            "Cell lookup timed out. world='" .. world .. "' formID=" .. tostring(formId) .. " — city/town")
+    else
+        local mapName = world:match("/([^/]+)%.") or world:match("/([^/]+)$") or "Unknown Cell"
+        state.finishCellLookup(mapName, "", false,
+            "Cell lookup timed out. world='" .. world .. "' formID=" .. tostring(formId) .. " — treating as dungeon. If this FormID is missing from oblivion_cell_database.csv, add it.")
+    end
 end
 
 -- Sync tracking and helpers
@@ -788,28 +1070,32 @@ local function resetSettings()
 
     -- Do not clear bridge status or queue; probe will reconcile based on APAppliedCount vs receipts
     -- Reset local state so init will run again
-    progressiveShopStockInitialized = false
-    arenaInitialized = false
-    shrinesInitialized = false
-    sidequestsInitialized = false
-    gatesInitialized = false
-    doomstonesInitialized = false
-    gateVisionInitialized = false
-    fastTravelInitialized = false
-    classSystemInitialized = false
-    dungeonCountersInitialized = false
-    encumbranceScalingApplied = false  -- allow reapplication for the new session
-    needsProgressiveShopStockInit = false
-    needsArenaInit = false
-    needsShrinesInit = false
-    needsSidequestsInit = false
-    needsGatesInit = false
-    needsDoomstonesInit = false
-    needsGateVisionInit = false
-    needsFastTravelInit = false
-    needsClassSystemInit = false
-    needsDungeonCountersInit = false
-    modFullyInitialized = false
+    init.shopStock = false
+    init.arena = false
+    init.shrines = false
+    init.sidequests = false
+    init.gates = false
+    init.doomstones = false
+    init.gateVision = false
+    init.fastTravel = false
+    init.classSystem = false
+    init.dungeonCounters = false
+    init.bounties = false
+    init.weaponLicenses = false
+    init.encumbrance = false  -- allow reapplication for the new session
+    init.needsShopStock = false
+    init.needsArena = false
+    init.needsShrines = false
+    init.needsSidequests = false
+    init.needsGates = false
+    init.needsDoomstones = false
+    init.needsGateVision = false
+    init.needsFastTravel = false
+    init.needsClassSystem = false
+    init.needsDungeonCounters = false
+    init.needsBounties = false
+    init.needsWeaponLicenses = false
+    init.modFully = false
     probeFinished = false
 
     -- Proactively reload settings and run init now so user doesn't have to wait
@@ -820,7 +1106,7 @@ local function resetSettings()
     writeLog("Reinit: starting APSync probe to reconcile items after fresh init")
     if not probeFinished and not apProbe.awaiting then
         startAPSyncProbe()
-        probeStartedForSession = true -- prevents false positive on APAppliedCount = 0 at startup
+        state.probeStartedForSession = true -- prevents false positive on APAppliedCount = 0 at startup
     end
 
     -- One-shot: skip reinit check on the very next 0 so catch-up can proceed
@@ -962,38 +1248,142 @@ local function hasItemsInQueue()
     return false
 end
 
--- Function to find HUD widget
+local cachedFreezeSubsystem = nil
+
 local function FindByName(class, name)
     local objs = FindAllOf(class)
     if not objs then return nil end
     for _, obj in ipairs(objs) do
-        if obj:GetFullName():match(name) then return obj end
+        local ok, fullName = pcall(function()
+            if not obj or not obj:IsValid() then return nil end
+            return obj:GetFullName()
+        end)
+        if ok and fullName and fullName:match(name) then
+            return obj
+        end
     end
     return nil
 end
 
--- Message system for Archipelago notifications (Uses tutorial display area)
+local function getTutorialWidget()
+    local cached = state.tutorialWidget
+    if cached and cached.IsValid and cached:IsValid() then
+        return cached
+    end
+    local found = FindByName("WBP_ModernTutorialDisplay_C", "WBP_PrimaryGameLayout_C")
+    state.tutorialWidget = found
+    return found
+end
+
+function state.isWorldUnstable()
+    return state.travelling or os.clock() < state.unstableUntil
+end
+
+function state.clearCachedUObjects()
+    apProbe.console = nil
+    cachedFreezeSubsystem = nil
+    state.tutorialWidget = nil
+end
+
+function state.beginWorldUnstable()
+    state.unstableUntil = os.clock() + state.unstableSeconds
+    state.clearCachedUObjects()
+    apProbe.awaiting = false
+    cellLookupProbe.awaiting = false
+    cellLookupProbe.startedAt = nil
+    cellLookupProbe.blockStartedAt = nil
+    cellLookupProbe.circularBufferMode = false
+    cellNameRequestPending = false
+end
+
+function state.markTravelling(reason)
+    local widget = getTutorialWidget()
+    CloseTutorialByTimeSqueeze(widget)
+    HardHideTutorialWidget(widget)
+    if lastAPTutorialMessage ~= "" then
+        if #tutorialQueue == 0 or tutorialQueue[1] ~= lastAPTutorialMessage then
+            table.insert(tutorialQueue, 1, lastAPTutorialMessage)
+        end
+    end
+    lastAPTutorialMessage = ""
+    lastAPCheckMessage = ""
+    lastAPTutorialAt = 0
+    nextTutorialAt = 0
+    local already = state.travelling
+    state.travelling = true
+    if ActorDetection then
+        pcall(function() ActorDetection.SetTravelling(true) end)
+    end
+    if not already then
+        writeLog("Transition start: " .. reason)
+    end
+end
+
+function state.markArrived(reason)
+    writeLog("Transition end: " .. reason)
+    state.travelling = false
+    if ActorDetection then
+        pcall(function() ActorDetection.SetTravelling(false) end)
+    end
+    state.beginWorldUnstable()
+    if state.pinsNeedRestore then
+        state.pinsRestoreArmed = true
+    end
+end
+
+function state.tryRegisterHook(path, callback, label)
+    local ok, err = pcall(function()
+        RegisterHook(path, callback)
+    end)
+    if ok then
+        writeLog("Hooked " .. label)
+    else
+        writeLog("Failed to hook " .. label .. ": " .. tostring(err), "WARN")
+    end
+end
+
 local InterceptTutorial = false
+local interceptApplied = false
 local QueuedArchipelagoMessage = ""
--- Track the last AP tutorial message so we can convert it to a console Message on menu/freeze
 local lastAPTutorialMessage = ""
+local lastAPCheckMessage = ""
+local lastAPTutorialAt = 0
+local tutorialQueue = {}
+local nextTutorialAt = 0
+local replayTutorialDuration = nil
 
--- Default on-screen duration for AP tutorial messages (seconds)
--- Change this to adjust how long messages are shown in the HUD tutorial box
 local AP_TUTORIAL_DEFAULT_TIME = 4.0
+local AP_TUTORIAL_FAST_TIME = 1.0
+local AP_TUTORIAL_FAST_BACKLOG = 25
+local AP_TUTORIAL_SUMMARY_BACKLOG = 50
+local lastTutorialShowDuration = AP_TUTORIAL_DEFAULT_TIME
 
--- Hook guards
+-- Drop stored tutorial text after the HUD duration so a later zone does not
+-- replay a check that already faded minutes ago.
+function state.expireAPTutorialFallbackIfNeeded()
+    if state.travelling or state.isWorldUnstable() then
+        return
+    end
+    if lastAPTutorialAt <= 0 then
+        return
+    end
+    if (os.clock() - lastAPTutorialAt) >= lastTutorialShowDuration then
+        lastAPTutorialMessage = ""
+        lastAPCheckMessage = ""
+        lastAPTutorialAt = 0
+    end
+end
+
 local setupNewDisplayHooked = false
 local setMenuModeHooked = false
+local settingsDetailsLogged = false
 
--- Helpers to force-close the tutorial message quickly when entering menu/freeze
 local function CloseTutorialByTimeSqueeze(widget)
     local target = widget
     if (not target) or (not target.IsValid) or (not target:IsValid()) then
-        target = FindByName("WBP_ModernTutorialDisplay_C", "WBP_PrimaryGameLayout_C")
+        target = getTutorialWidget()
     end
     if not target or not target.IsValid or not target:IsValid() then return false end
-    -- Set 0.001 display time and force update/closing animations
     pcall(function()
         target.CurrentDisplayTime = 0.001
         if target.ManageCurrentDisplay then target:ManageCurrentDisplay() end
@@ -1004,11 +1394,10 @@ local function CloseTutorialByTimeSqueeze(widget)
     return true
 end
 
--- Force-hide helper
 local function HardHideTutorialWidget(widget)
     local target = widget
     if (not target) or (not target.IsValid) or (not target:IsValid()) then
-        target = FindByName("WBP_ModernTutorialDisplay_C", "WBP_PrimaryGameLayout_C")
+        target = getTutorialWidget()
     end
     if not target or not target.IsValid or not target:IsValid() then return false end
     pcall(function()
@@ -1031,7 +1420,6 @@ local function escapeForConsole(str)
     return tostring(str):gsub('"', '\\"')
 end
 
--- Menu detection function
 local function IsPlayerInMenu()
     local menu = FindFirstOf("VLegacyPlayerMenu")
     
@@ -1050,9 +1438,6 @@ local function IsPlayerInMenu()
     end
 end
 
--- Cache the freeze/menu subsystem to avoid repeated object searches
-local cachedFreezeSubsystem = nil
-
 local function getFreezeSubsystem()
     if cachedFreezeSubsystem and cachedFreezeSubsystem:IsValid() then
         return cachedFreezeSubsystem
@@ -1061,8 +1446,8 @@ local function getFreezeSubsystem()
         return FindFirstOf("VFreezeInMenuSubsystem")
     end)
     if ok and sub and sub:IsValid() then
-    cachedFreezeSubsystem = sub
-    return cachedFreezeSubsystem
+        cachedFreezeSubsystem = sub
+        return cachedFreezeSubsystem
     end
     return nil
 end
@@ -1082,15 +1467,22 @@ local function isGameFreezing()
 end
 
 function BroadcastArchipelagoMessage(message)
-    local HudModel = FindByName("WBP_ModernTutorialDisplay_C", "WBP_PrimaryGameLayout_C")
-    if not HudModel or not HudModel:IsValid() then 
-        
-        return 
+    if not message or message == "" then
+        return false
     end
-    
+    local HudModel = getTutorialWidget()
+    if not HudModel or not HudModel:IsValid() then
+        return false
+    end
+
+    interceptApplied = false
     QueuedArchipelagoMessage = message
     InterceptTutorial = true
+    if lastAPTutorialMessage ~= "" then
+        CloseTutorialByTimeSqueeze(HudModel)
+    end
     HudModel:SetupNewDisplay()
+    return interceptApplied
 end
 
 
@@ -1105,27 +1497,33 @@ local function InterceptTutorialDisplay(Context)
                 local fText = KismetTextLibrary:Conv_StringToText(QueuedArchipelagoMessage)
                 tutorialMessage.ControllerText = fText
                 tutorialMessage.MouseKeyboardText = fText
-                -- Remember this AP message so we can convert it to a console Message if a menu/freeze occurs
                 lastAPTutorialMessage = QueuedArchipelagoMessage or ""
-                
-                -- Set AP Tutorial Message display time
-                tutorialMessage.DefaultDisplayTime = AP_TUTORIAL_DEFAULT_TIME
-                tutorialMessage.CurrentDisplayTime = AP_TUTORIAL_DEFAULT_TIME
-                
-                -- Trigger the input method change to actually display the message
-                tutorialMessage:ManageInputMethodeChange(1)
-                
+                lastAPCheckMessage = lastAPTutorialMessage
+                lastAPTutorialAt = os.clock()
+                local duration = AP_TUTORIAL_DEFAULT_TIME
+                if replayTutorialDuration and replayTutorialDuration > 0 then
+                    duration = replayTutorialDuration
+                end
+                replayTutorialDuration = nil
+
+                tutorialMessage.DefaultDisplayTime = duration
+                tutorialMessage.CurrentDisplayTime = duration
                 pcall(function()
-                    if tutorialMessage.SetVisibility then tutorialMessage:SetVisibility(0) end -- Visible
+                    if tutorialMessage.ManageInputMethodeChange then
+                        tutorialMessage:ManageInputMethodeChange(1)
+                    end
+                end)
+
+                pcall(function()
+                    if tutorialMessage.SetVisibility then tutorialMessage:SetVisibility(0) end
                     if tutorialMessage.SetRenderOpacity then tutorialMessage:SetRenderOpacity(1.0) end
                     if tutorialMessage.ResetAnimation then tutorialMessage:ResetAnimation() end
                     if tutorialMessage.LaunchOpenningAnimation then tutorialMessage:LaunchOpenningAnimation() end
                 end)
-                
+
+                interceptApplied = true
                 local okF, fr = pcall(isGameFreezing)
                 lastFreezeState = okF and fr or false
-                
-                
             end
         end
         InterceptTutorial = false
@@ -1136,29 +1534,75 @@ end
 
 
 
--- Function to display Archipelago notifications via tutorial display
-local function ShowArchipelagoNotification(message)
-    -- If currently frozen or in menu, route to console ["Message"]
+function state.emitTutorialNow(message)
+    lastAPCheckMessage = message or lastAPCheckMessage
     local inMenuNow = false
     local okMenu, resMenu = pcall(IsPlayerInMenu)
     if okMenu then inMenuNow = resMenu end
+    local duration = AP_TUTORIAL_DEFAULT_TIME
+    if #tutorialQueue >= AP_TUTORIAL_FAST_BACKLOG then
+        duration = AP_TUTORIAL_FAST_TIME
+    end
     if isGameFreezing() or inMenuNow then
         pcall(function()
             console.ExecuteConsole("Message \"" .. tostring(message) .. "\"")
         end)
-        return
+        lastAPTutorialAt = os.clock()
+        lastTutorialShowDuration = duration
+        nextTutorialAt = os.clock() + duration + 0.6
+        return true
+    end
+    if state.travelling or state.isWorldUnstable() then
+        return false
     end
 
-    
-    local success, err = pcall(function()
-        BroadcastArchipelagoMessage(message)
+    replayTutorialDuration = duration
+    local shown = false
+    pcall(function()
+        shown = BroadcastArchipelagoMessage(message) and true or false
     end)
-    
-    if not success then
-        pcall(function()
-            console.ExecuteConsole("Message \"" .. tostring(message) .. "\"")
-        end)
+    if not shown then
+        replayTutorialDuration = nil
+        nextTutorialAt = os.clock() + 0.25
+        return false
+    end
+    lastAPTutorialMessage = message
+    lastAPTutorialAt = os.clock()
+    lastTutorialShowDuration = duration
+    nextTutorialAt = os.clock() + duration + 0.6
+    return true
+end
+
+local function ShowArchipelagoNotification(message)
+    table.insert(tutorialQueue, message)
+end
+
+local function collapseTutorialQueueIfHuge()
+    local n = #tutorialQueue
+    if n < AP_TUTORIAL_SUMMARY_BACKLOG then
         return
+    end
+    tutorialQueue = {}
+    queueMessagebox(n .. " checks received, check client for full list")
+end
+
+function state.processTutorialQueue()
+    if #tutorialQueue == 0 then
+        return
+    end
+    if os.clock() < nextTutorialAt then
+        return
+    end
+    if state.travelling or state.isWorldUnstable() then
+        return
+    end
+    collapseTutorialQueueIfHuge()
+    if #tutorialQueue == 0 then
+        return
+    end
+    local msg = tutorialQueue[1]
+    if state.emitTutorialNow(msg) then
+        table.remove(tutorialQueue, 1)
     end
 end
 
@@ -1166,44 +1610,55 @@ end
 local function processItemEvents()
     local filePrefix = getCurrentFilePrefix()
     if not filePrefix then return end
-    
-    local eventsPath = getArchipelagoPath(filePrefix .. "_item_events.txt")
-    local file = io.open(eventsPath, "r")
-    if not file then return end
-    
-    for line in file:lines() do
-        if line and line:match("%S") then
-            local eventType, itemName, target = line:match("^([^|]+)|([^|]+)|(.+)$")
-            if eventType and itemName and target then
-                local message = ""
-                if eventType == "found" then
-                    message = "You found your " .. itemName .. " (" .. target .. ")"
-                elseif eventType == "sent" then
-                    local player, location = target:match("^(.-)|(.*)$")
-                    if player and location and location ~= "" then
-                        message = "You sent '" .. itemName .. "' to '" .. player .. "' (" .. location .. ")"
-                    else
-                        message = "You sent '" .. itemName .. "' to '" .. target .. "'"
+
+    local livePath = getArchipelagoPath(filePrefix .. "_item_events.txt")
+    local takePath = getArchipelagoPath(filePrefix .. "_item_events_reading.txt")
+    local live = io.open(livePath, "r")
+    if live then
+        live:close()
+        pcall(function()
+            os.rename(livePath, takePath)
+        end)
+    end
+
+    local function ingest(path)
+        local file = io.open(path, "r")
+        if not file then return end
+        for line in file:lines() do
+            if line and line:match("%S") then
+                local eventType, itemName, target = line:match("^([^|]+)|([^|]+)|(.+)$")
+                if eventType and itemName and target then
+                    local message = ""
+                    if eventType == "found" then
+                        message = "You found your " .. itemName .. " (" .. target .. ")"
+                    elseif eventType == "sent" then
+                        local player, location = target:match("^(.-)|(.*)$")
+                        if player and location and location ~= "" then
+                            message = "You sent '" .. itemName .. "' to '" .. player .. "' (" .. location .. ")"
+                        else
+                            message = "You sent '" .. itemName .. "' to '" .. target .. "'"
+                        end
+                    elseif eventType == "received" then
+                        local player, location = target:match("^(.-)|(.*)$")
+                        if player and location and location ~= "" then
+                            message = player .. " found your " .. itemName .. " (" .. location .. ")"
+                        else
+                            message = target .. " found your " .. itemName
+                        end
                     end
-                elseif eventType == "received" then
-                    local player, location = target:match("^(.-)|(.*)$")
-                    if player and location and location ~= "" then
-                        message = player .. " found your " .. itemName .. " (" .. location .. ")"
-                    else
-                        message = target .. " found your " .. itemName
+                    if message ~= "" then
+                        ShowArchipelagoNotification(message)
                     end
-                end
-                if message ~= "" then
-                    -- Use the tutorial display area
-                    ShowArchipelagoNotification(message)
                 end
             end
         end
+        file:close()
+        os.remove(path)
     end
-    file:close()
-    
-    -- Clear the file after processing
-    os.remove(eventsPath)
+
+    ingest(takePath)
+    ingest(livePath)
+    collapseTutorialQueueIfHuge()
 end
 
 -- Detect messages generated by processItemEvents that may appear via console Message
@@ -1267,7 +1722,7 @@ local function initializeShopsanity()
         writeLog("Adding " .. shopItem .. " to all merchant chests...")
         for _, chestRef in ipairs(config.merchantChests) do
             local command = chestRef .. ".AddItem " .. shopItem .. " 1"
-            console.ExecuteConsole(command)
+            pcall(function() console.ExecuteConsole(command) end)
         end
         writeLog("Shop check item " .. shopItem .. " added to all merchant chests")
     end
@@ -1310,74 +1765,95 @@ function loadSettings()
     local hasFastTravelSettings = false
     local hasClassSystemSettings = false
     local hasDungeonSettings = false
+    local hasBountySettings = false
+    local selectedDungeonNames = {}
+
+    -- File flags are the source of truth. RAM from a prior seed/session must not skip inits.
+    init.shopStock = false
+    init.arena = false
+    init.shrines = false
+    init.sidequests = false
+    init.gates = false
+    init.doomstones = false
+    init.gateVision = false
+    init.fastTravel = false
+    init.classSystem = false
+    init.dungeonCounters = false
+    init.bounties = false
+    init.weaponLicenses = false
+    init.modFully = false
     
     for line in file:lines() do
         local key, value = line:match("^(.-)=(.*)$")
         if key and value then
+            local function foundLog(msg)
+                if not settingsDetailsLogged then
+                    writeLog(msg)
+                end
+            end
             if key == "free_offerings" then
                 archipelagoSettings.free_offerings = (value == "True")
             elseif key == "goal" then
                 currentGoal = value
-                writeLog("Found goal: " .. value)
+                foundLog("Found goal: " .. value)
                 if value == "nirnsanity" then nirnrootInSeed = true end
             elseif key == "goal_required" then
                 goalRequired = tonumber(value) or 0
-                writeLog("Found goal_required: " .. tostring(goalRequired))
+                foundLog("Found goal_required: " .. tostring(goalRequired))
             elseif key == "mod_fully_initialized" and value == "True" then
-                modFullyInitialized = true
-                writeLog("Found mod already fully initialized from previous session")
+                init.modFully = true
             elseif key == "progressive_shop_stock_initialized" and value == "True" then
-                progressiveShopStockInitialized = true
-                writeLog("Found progressive shop stock already initialized from previous session")
+                init.shopStock = true
+                foundLog("Found progressive shop stock already initialized from previous session")
             elseif key == "progressive_shop_stock" and value == "True" then
                 hasProgressiveShopStockSettings = true
-                writeLog("Found progressive_shop_stock=True in settings file")
+                foundLog("Found progressive_shop_stock=True in settings file")
             elseif key == "arena_initialized" and value == "True" then
-                arenaInitialized = true
-                writeLog("Found arena already initialized from previous session")
+                init.arena = true
+                foundLog("Found arena already initialized from previous session")
             elseif key == "enable_arena" and value == "True" then
                 hasArenaSettings = true
-                writeLog("Found enable_arena=True in settings file")
+                foundLog("Found enable_arena=True in settings file")
             elseif key == "shrines_initialized" and value == "True" then
-                shrinesInitialized = true
-                writeLog("Found shrines already initialized from previous session")
+                init.shrines = true
+                foundLog("Found shrines already initialized from previous session")
 
             elseif key == "active_shrines" and value ~= "" then
                 hasShrineSettings = true
-                writeLog("Found active_shrines=" .. value .. " in settings file")
+                foundLog("Found active_shrines=" .. value .. " in settings file")
             elseif key == "sidequests_initialized" and value == "True" then
-                sidequestsInitialized = true
-                writeLog("Found sidequests already initialized from previous session")
+                init.sidequests = true
+                foundLog("Found sidequests already initialized from previous session")
             elseif key == "selected_sidequests" and value ~= "" then
                 hasSidequestSettings = true
-                writeLog("Found selected_sidequests in settings file")
+                foundLog("Found selected_sidequests in settings file")
             elseif key == "gates_initialized" and value == "True" then
-                gatesInitialized = true
-                writeLog("Found gates already initialized from previous session")
+                init.gates = true
+                foundLog("Found gates already initialized from previous session")
             elseif key == "doomstones_initialized" and value == "True" then
-                doomstonesInitialized = true
-                writeLog("Found doomstones already initialized from previous session")
+                init.doomstones = true
+                foundLog("Found doomstones already initialized from previous session")
             elseif key == "gate_vision" and value == "on" then
                 hasGateVisionSettings = true
-                writeLog("Found gate_vision=on in settings file")
+                foundLog("Found gate_vision=on in settings file")
             elseif key == "gate_vision_initialized" and value == "True" then
-                gateVisionInitialized = true
-                writeLog("Found gate vision already initialized from previous session")
+                init.gateVision = true
+                foundLog("Found gate vision already initialized from previous session")
             elseif key == "fast_travel_initialized" and value == "True" then
-                fastTravelInitialized = true
-                writeLog("Found fast travel already initialized from previous session")
+                init.fastTravel = true
+                foundLog("Found fast travel already initialized from previous session")
             elseif key == "fast_travel_item" and value:lower() == "true" then
                 hasFastTravelSettings = true
-                writeLog("Found fast_travel_item=True in settings file")
+                foundLog("Found fast_travel_item=True in settings file")
             elseif key == "class_system_enabled" and value == "True" then
                 hasClassSystemSettings = true
-                writeLog("Found class_system_enabled=True in settings file")
+                foundLog("Found class_system_enabled=True in settings file")
             elseif key == "class_system_initialized" and value == "True" then
-                classSystemInitialized = true
-                writeLog("Found class system already initialized from previous session")
+                init.classSystem = true
+                foundLog("Found class system already initialized from previous session")
             elseif key == "selected_regions" and value ~= "" then
                 hasDungeonSettings = true
-                writeLog("Found selected_regions in settings")
+                foundLog("Found selected_regions in settings")
             elseif key == "dungeon_marker_mode" then
                 local v = value:lower()
                 if v == "reveal_only" then
@@ -1385,12 +1861,12 @@ function loadSettings()
                 else
                     archipelagoSettings.dungeon_marker_mode = "reveal_and_fast_travel"
                 end
-                writeLog("Found dungeon_marker_mode=" .. archipelagoSettings.dungeon_marker_mode)
+                foundLog("Found dungeon_marker_mode=" .. archipelagoSettings.dungeon_marker_mode)
             elseif key == "dungeon_warp" then
                 local v = value:lower()
                 if v == "on" or v == "item" or v == "early_item" or v == "off" then
                     archipelagoSettings.dungeon_warp = v
-                    writeLog("Found dungeon_warp=" .. v)
+                    foundLog("Found dungeon_warp=" .. v)
                     -- If dungeon_warp is "on", enable it immediately
                     if v == "on" then
                         local okSet, errSet = pcall(function()
@@ -1405,46 +1881,96 @@ function loadSettings()
                 end
             elseif key == "selected_class" then
                 selectedClass = value
-                writeLog("Found selected_class: " .. value)
+                foundLog("Found selected_class: " .. value)
             elseif key == "track_kills" and value == "True" then
                 killTrackingEnabled = true
-                writeLog("Found track_kills=True in settings file")
+                foundLog("Found track_kills=True in settings file")
             elseif key == "dungeon_kills" then
                 hasDungeonKillChecks = (tonumber(value) or 0) > 0
             elseif key == "overworld_kills" then
                 hasOverworldKillChecks = (tonumber(value) or 0) > 0
+            elseif key == "dungeon_kills_per_check" then
+                dungeonKillsPerCheck = math.max(1, math.min(10, tonumber(value) or 1))
+                foundLog("Found dungeon_kills_per_check=" .. tostring(dungeonKillsPerCheck))
+            elseif key == "overworld_kills_per_check" then
+                overworldKillsPerCheck = math.max(1, math.min(10, tonumber(value) or 1))
+                foundLog("Found overworld_kills_per_check=" .. tostring(overworldKillsPerCheck))
+            elseif key == "oblivion_kills" then
+                state.oblivionKills = tonumber(value) or 0
+                state.hasOblivionKillChecks = state.oblivionKills > 0
+            elseif key == "oblivion_kills_per_gate" then
+                state.oblivionKillsPerGate = tonumber(value) or 0
+                foundLog("Found oblivion_kills_per_gate=" .. tostring(state.oblivionKillsPerGate))
+            elseif key == "gate_count" then
+                state.gateCount = tonumber(value) or 0
+            elseif key == "oblivion_kills_per_check" then
+                state.oblivionKillsPerCheck = math.max(1, math.min(10, tonumber(value) or 2))
+                foundLog("Found oblivion_kills_per_check=" .. tostring(state.oblivionKillsPerCheck))
+            elseif key == "weapon_lock" then
+                state.weaponLock = (value == "True" or value == "true")
+                foundLog("Found weapon_lock=" .. tostring(state.weaponLock))
+            elseif key == "weapon_licenses_initialized" and value == "True" then
+                init.weaponLicenses = true
+            elseif key == "skill_xp_multiplier" then
+                archipelagoSettings.skill_xp_multiplier = math.max(1, math.min(8, tonumber(value) or 1))
+                foundLog("Found skill_xp_multiplier=" .. tostring(archipelagoSettings.skill_xp_multiplier))
             elseif key == "auto_tracking" then
                 archipelagoSettings.auto_tracking = (value == "True")
-                writeLog("Found auto_tracking=" .. tostring(archipelagoSettings.auto_tracking))
+                foundLog("Found auto_tracking=" .. tostring(archipelagoSettings.auto_tracking))
                 pcall(function()
                     local val = archipelagoSettings.auto_tracking and 1 or 0
                     console.ExecuteConsole("set APAutoTrackEnabled to " .. val)
                 end)
             elseif key == "silent_auto_tracking" then
                 archipelagoSettings.silent_auto_tracking = (value == "True")
-                writeLog("Found silent_auto_tracking=" .. tostring(archipelagoSettings.silent_auto_tracking))
+                foundLog("Found silent_auto_tracking=" .. tostring(archipelagoSettings.silent_auto_tracking))
+            elseif key == "ap_tips" then
+                archipelagoSettings.ap_tips = (value == "True")
+                foundLog("Found ap_tips=" .. tostring(archipelagoSettings.ap_tips))
             elseif key == "nirnroot_count" then
                 if (tonumber(value) or 0) > 0 then nirnrootInSeed = true end
             elseif key == "dungeon_selected_count" then
                 chestInSeed = (tonumber(value) or 0) > 0
+            elseif key == "bounty_initialized" and value == "True" then
+                init.bounties = true
+            elseif key == "bounty_count" then
+                hasBountySettings = (tonumber(value) or 0) > 0
+            elseif key == "fence_limit" then
+                state.fenceLimit = tonumber(value) or 0
+                if state.fenceLimit > 0 then
+                    pcall(function()
+                        console.ExecuteConsole("set APFenceLimit to " .. tostring(state.fenceLimit))
+                    end)
+                end
+            elseif key:match("^region_.+_dungeons$") then
+                for name in value:gmatch("([^,]+)") do
+                    local trimmed = name:match("^%s*(.-)%s*$")
+                    if trimmed ~= "" then
+                        table.insert(selectedDungeonNames, trimmed)
+                    end
+                end
             end
         end
     end
     file:close()
     
     -- Set flags if we have settings but haven't initialized yet (using session flags)
-    needsProgressiveShopStockInit = hasProgressiveShopStockSettings and not progressiveShopStockInitialized
-    needsArenaInit = hasArenaSettings and not arenaInitialized
-    needsShrinesInit = hasShrineSettings and not shrinesInitialized
-    needsSidequestsInit = hasSidequestSettings and not sidequestsInitialized
-    needsGatesInit = not gatesInitialized
-    needsDoomstonesInit = not doomstonesInitialized
-    needsGateVisionInit = hasGateVisionSettings and not gateVisionInitialized
-    needsFastTravelInit = hasFastTravelSettings and not fastTravelInitialized
-    needsClassSystemInit = hasClassSystemSettings and not classSystemInitialized
-    needsDungeonCountersInit = hasDungeonSettings and not dungeonCountersInitialized
+    init.needsShopStock = hasProgressiveShopStockSettings and not init.shopStock
+    init.needsArena = hasArenaSettings and not init.arena
+    init.needsShrines = hasShrineSettings and not init.shrines
+    init.needsSidequests = hasSidequestSettings and not init.sidequests
+    init.needsGates = not init.gates
+    init.needsDoomstones = not init.doomstones
+    init.needsGateVision = hasGateVisionSettings and not init.gateVision
+    init.needsFastTravel = hasFastTravelSettings and not init.fastTravel
+    init.needsClassSystem = hasClassSystemSettings and not init.classSystem
+    init.needsDungeonCounters = hasDungeonSettings and not init.dungeonCounters
+    init.needsBounties = hasBountySettings and not init.bounties
+    init.needsWeaponLicenses = state.weaponLock and not init.weaponLicenses
     
-    writeLog("Settings loaded - needsProgressiveShopStockInit: " .. tostring(needsProgressiveShopStockInit) .. ", needsArenaInit: " .. tostring(needsArenaInit) .. ", needsShrinesInit: " .. tostring(needsShrinesInit) .. ", needsSidequestsInit: " .. tostring(needsSidequestsInit) .. ", needsGatesInit: " .. tostring(needsGatesInit) .. ", needsDoomstonesInit: " .. tostring(needsDoomstonesInit) .. ", needsGateVisionInit: " .. tostring(needsGateVisionInit) .. ", needsFastTravelInit: " .. tostring(needsFastTravelInit) .. ", needsClassSystemInit: " .. tostring(needsClassSystemInit))
+    writeLog("Settings loaded - init.needsShopStock: " .. tostring(init.needsShopStock) .. ", init.needsArena: " .. tostring(init.needsArena) .. ", init.needsShrines: " .. tostring(init.needsShrines) .. ", init.needsSidequests: " .. tostring(init.needsSidequests) .. ", init.needsGates: " .. tostring(init.needsGates) .. ", init.needsDoomstones: " .. tostring(init.needsDoomstones) .. ", init.needsGateVision: " .. tostring(init.needsGateVision) .. ", init.needsFastTravel: " .. tostring(init.needsFastTravel) .. ", init.needsClassSystem: " .. tostring(init.needsClassSystem))
+    settingsDetailsLogged = true
+    require("MapPins").setSelectedDungeons(selectedDungeonNames)
     return true  -- Settings loaded successfully
 end
 
@@ -1655,27 +2181,31 @@ local function initializeGates()
     end
     file:close()
     
-    -- Read gate_count from settings file
+    -- Read gate_count / oblivion_kills from settings file
     local gateCount = 0
+    local oblivionKills = 0
     file = io.open(settingsPath, "r")
     if file then
         for line in file:lines() do
             local key, value = line:match("^(.-)=(.*)$")
-            if key and value and key == "gate_count" then
-                gateCount = tonumber(value) or 0
-                break
+            if key and value then
+                if key == "gate_count" then
+                    gateCount = tonumber(value) or 0
+                elseif key == "oblivion_kills" then
+                    oblivionKills = tonumber(value) or 0
+                end
             end
         end
         file:close()
     end
     
-    -- Only enable gates if gate_count > 0
-    if gateCount > 0 then
+    -- Enable random gates for Closed checks, or for LTD Oblivion kill farming
+    if gateCount > 0 or oblivionKills > 0 then
         -- Set APGatesEnabled to 1 to enable Oblivion Gates
         console.ExecuteConsole("set APGatesEnabled to 1")
-        writeLog("Gates initialization complete - APGatesEnabled set to 1 (gate_count: " .. tostring(gateCount) .. ")")
+        writeLog("Gates initialization complete - APGatesEnabled set to 1 (gate_count: " .. tostring(gateCount) .. ", oblivion_kills: " .. tostring(oblivionKills) .. ")")
     else
-        writeLog("Gates initialization skipped - gate_count is 0")
+        writeLog("Gates initialization skipped - gate_count is 0 and no Oblivion kill checks")
     end
     
     -- Mark as initialized
@@ -2001,6 +2531,7 @@ local function revealDungeonMarkersForRegion(regionName)
             writeLog("No map marker mapping found for dungeon '" .. dungeonName .. "'", "WARNING")
         end
     end
+    require("MapPins").placeRegionDungeonPins(regionName)
     return revealed
 end
 
@@ -2247,13 +2778,49 @@ local function processItemQueue()
     end
     
     local processedItems = {}
+    bulkItemGrantInProgress = #itemsToProcess >= BULK_ITEM_THRESHOLD
+    if bulkItemGrantInProgress then
+        writeLog("Bulk item grant starting (" .. #itemsToProcess .. " items). Inventory notifications will be shortened.")
+        queueMessagebox("A large number of items are being added. Outgoing checks may be delayed until this finishes.")
+        processMessageboxQueue()
+    end
     
     -- Give each item to the player using console commands
     for _, itemName in ipairs(itemsToProcess) do
         
         -- Handle Region Access items (e.g., "West Weald Access"): reveal only selected dungeons' markers
         local regionAccess = itemName:match("^(.*) Access$")
-        if regionAccess then
+        local licenseCat = itemName:match("^(%a+) License$")
+        if licenseCat and (licenseCat == "Blade" or licenseCat == "Blunt" or licenseCat == "Bow"
+                or licenseCat == "Staff" or licenseCat == "Spell" or licenseCat == "Unarmed") then
+            state.loadKillProgress()
+            state.weaponLicenses = state.weaponLicenses or {}
+            state.weaponLicenses[licenseCat:lower()] = true
+            state.saveKillProgress()
+            local blockedGlobal = "APWeaponLicense" .. licenseCat .. "Blocked"
+            pcall(function()
+                console.ExecuteConsole("set " .. blockedGlobal .. " to 2")
+            end)
+            writeLog("Weapon license granted: " .. licenseCat:lower() .. " (" .. blockedGlobal .. " = 2)")
+            table.insert(processedItems, itemName)
+        elseif itemName == "Black Market Access" then
+            writeLog("Processing Black Market Access - setting APBlackMarketAccess to 1")
+            local ok, err = pcall(function()
+                console.ExecuteConsole("set APBlackMarketAccess to 1")
+                if state.fenceLimit > 0 then
+                    console.ExecuteConsole("set APFenceLimit to " .. tostring(state.fenceLimit))
+                end
+            end)
+            if ok then
+                table.insert(processedItems, itemName)
+            else
+                writeLog("Failed to set Black Market Access: " .. tostring(err), "ERROR")
+            end
+        elseif itemName == "Progressive Bounty Contract" then
+            writeLog("Processing Progressive Bounty Contract")
+            require("BountyTracking").grantContract()
+            table.insert(processedItems, itemName)
+        elseif regionAccess then
             if regionAccess == "Paradise" then
                 writeLog("Processing Paradise Access")
                 local okAccess, errAccess = pcall(function()
@@ -2640,6 +3207,9 @@ local function processItemQueue()
             end
         else
             local edid = config.itemMappings[itemName]
+            if type(edid) == "table" then
+                edid = edid[math.random(#edid)]
+            end
             if edid then
                 -- Set quantity based on item type
                 local quantity = 1
@@ -2647,13 +3217,17 @@ local function processItemQueue()
                     quantity = 3
                 elseif itemName == "Steel Arrows" then
                     quantity = 5
-                elseif itemName == "Fire Arrow Bundle" then
+                elseif itemName == "Special Arrow Bundle" then
                     quantity = 100
+                elseif itemName == "Poisoned Apples" then
+                    quantity = 3
                 elseif itemName == "Gold (10)" then
                     quantity = 10
                 elseif itemName == "Gold" or itemName == "Clavicus Gold" then
                     quantity = 500
                 elseif itemName == "Greater Soulgem Package" then
+                    quantity = 5
+                elseif itemName == "Legendary Detect Life Scroll Bundle" then
                     quantity = 5
                 end
                 
@@ -2678,6 +3252,7 @@ local function processItemQueue()
         updateBridgeStatus(processedItems)
         os.remove(queuePath)
         writeLog("Processed " .. #processedItems .. " items")
+        bulkItemGrantInProgress = false
     end
 end
 
@@ -2715,6 +3290,10 @@ local trapHandlers = {
     APSpawnTrapReceived = function()
         console.ExecuteConsole("set APSpawnTrapReceived to 1")
         writeLog("Trap triggered: APSpawnTrapReceived")
+    end,
+    APWantedTrapReceived = function()
+        console.ExecuteConsole("set APWantedTrapReceived to 1")
+        writeLog("Trap triggered: APWantedTrapReceived")
     end,
 }
 
@@ -2778,17 +3357,20 @@ local function processDeathlinkSignal()
     os.remove(deathlinkPath)
 end
 
--- Check if a completion has already been recorded
+-- Check if a completion is already in *_completed.txt (same-session duplicate HUD).
 local function isCompletionAlreadyRecorded(completionTokenEdid)
     local filePrefix = getCurrentFilePrefix()
     if not filePrefix then return false end
-    
+    completionTokenEdid = (completionTokenEdid or ""):gsub("\r", ""):match("^%s*(.-)%s*$")
+    if completionTokenEdid == "" then return false end
+
     local statusPath = getArchipelagoPath(filePrefix .. "_completed.txt")
     local file = io.open(statusPath, "r")
     if not file then return false end
-    
+
     for line in file:lines() do
-        if line == completionTokenEdid then
+        local stored = (line or ""):gsub("\r", ""):match("^%s*(.-)%s*$")
+        if stored == completionTokenEdid then
             file:close()
             return true
         end
@@ -2798,13 +3380,12 @@ local function isCompletionAlreadyRecorded(completionTokenEdid)
 end
 
 -- Write quest completion status to file for the Archipelago client
--- This notifies the multiworld when we complete a location
 local function writeCompletionStatus(completionTokenEdid)
     local filePrefix = getCurrentFilePrefix()
     if not filePrefix then
         return
     end
-    
+
     local statusPath = getArchipelagoPath(filePrefix .. "_completed.txt")
     local file = io.open(statusPath, "a")
     if file then
@@ -2909,8 +3490,8 @@ local function checkValidSession()
             -- Force a settings reload path on reconnect: treat as not initialized
             -- This ensures we re-read the new session's settings and won't prompt
             -- for reinit when a fresh initialization is actually required.
-            modFullyInitialized = false
-            writeLog("Reconnect detected; forcing settings reload by clearing modFullyInitialized")
+            init.modFully = false
+            writeLog("Reconnect detected; forcing settings reload by clearing init.modFully")
         else
             writeLog("Failed to display 'connection established' message", "ERROR")
         end
@@ -2922,62 +3503,66 @@ local function checkValidSession()
 end
 
 -- Get current cell/location name for kill tracking
--- Search cell lookup file for a specific FormID
-lookupCellNameByFormID = function(formID)
+local cellDbByForm = nil
+
+function state.normalizeFormId(formID)
     if not formID then return nil end
-    
-    -- Normalize FormID to uppercase without 0x prefix
     formID = formID:upper():gsub("^0X", "")
-    -- Ensure exactly 8 characters with leading zeros
     if #formID < 8 then
         formID = string.rep("0", 8 - #formID) .. formID
     end
-    
-    -- Try the scripts folder first (this mod folder), then Archipelago folder
+    return formID
+end
+
+function state.ensureCellDatabase()
+    if cellDbByForm then
+        return true
+    end
     local file = nil
     local scriptDir = getScriptDirectory()
     if scriptDir and scriptDir ~= "" then
-        local scriptPath = scriptDir .. "\\oblivion_cell_database.csv"
-        file = io.open(scriptPath, "r")
+        file = io.open(scriptDir .. "\\oblivion_cell_database.csv", "r")
     end
-    
     if not file then
         file = io.open("oblivion_cell_database.csv", "r")
     end
-    
     if not file then
-        local lookupPath = getArchipelagoPath("oblivion_cell_database.csv")
-        file = io.open(lookupPath, "r")
+        file = io.open(getArchipelagoPath("oblivion_cell_database.csv"), "r")
     end
-    
     if not file then
         writeLog("Cell lookup file not found (oblivion_cell_database.csv)", "WARN")
-        return nil
+        return false
     end
-    
-    -- CSV format: CellName,FormID,EditorID,Type
-    -- Example: Nenalata Wendesel,000A7543,Nenalata02,CELL
+    cellDbByForm = {}
     for line in file:lines() do
         if not line:match("^%s*$") then
-            -- Split by comma
             local parts = {}
             for part in line:gmatch("([^,]+)") do
-                table.insert(parts, part:match("^%s*(.-)%s*$")) -- Trim whitespace
+                table.insert(parts, part:match("^%s*(.-)%s*$"))
             end
-            
-            -- Check if second field matches our FormID
             if #parts >= 2 then
-                local lineFormID = parts[2]:upper():gsub("^0X", "")
-                if lineFormID == formID then
-                    file:close()
-                    return parts[1], parts[3] -- Return cell name, EditorID
+                local form = state.normalizeFormId(parts[2])
+                local editor = parts[3] or ""
+                local name = parts[1]
+                if form then
+                    cellDbByForm[form] = { name = name, editor = editor, category = parts[4] or "" }
                 end
             end
         end
     end
-    
     file:close()
-    return nil
+    return true
+end
+
+lookupCellNameByFormID = function(formID)
+    if not formID or not state.ensureCellDatabase() then
+        return nil
+    end
+    local row = cellDbByForm[state.normalizeFormId(formID)]
+    if not row then
+        return nil
+    end
+    return row.name, row.editor, row.category
 end
 
 local function getCurrentCellName()
@@ -2993,14 +3578,11 @@ local function getCurrentCellName()
         worldFullName = player:GetWorld():GetFullName() or ""
     end)
 
-    -- Tamriel can always be identified directly from the world name.
     if worldFullName:find("Tamriel") then
         currentCellName = "Tamriel"
         return "Tamriel"
     end
 
-    -- Oblivion worldspaces (e.g. L_OblivionRD002) can be detected from the world name
-    -- Cache the result so kills are classified correctly even when the fade event didn't fire.
     if worldFullName:lower():find("oblivion") then
         local mapName = worldFullName:match("/([^/]+)%.") or worldFullName:match("/([^/]+)$") or "Oblivion Plane"
         currentCellName = mapName
@@ -3008,23 +3590,25 @@ local function getCurrentCellName()
         return mapName
     end
 
-    -- For interior cells, kick off a CSV lookup
-    if not cellNameRequestPending then
-        cellNameRequestPending = true
-        if apProbe.awaiting then
-            pendingCellLookup = true
-        else
-            startCellLookup()
-        end
+    local cityName = state.matchCityWorld(worldFullName)
+    if cityName then
+        currentCellName = cityName
+        currentCellIsOblivion = false
+        return cityName
     end
 
-    -- Return the raw map name as a temporary fallback until the lookup resolves.
-    local mapName = worldFullName:match("/([^/]+)%.") or worldFullName:match("/([^/]+)$") or "Unknown Location"
-    return mapName
+    if not cellNameRequestPending and not cellLookupProbe.awaiting then
+        state.startCellLookup()
+    end
+    return "Unknown Location"
 end
 
--- Returns "overworld", "oblivion", or "dungeon" based on the current cell.
+-- Returns "overworld", "oblivion", "town", or "dungeon".
 local function getCellKillType()
+    local worldName = state.currentWorldFullName()
+    if state.matchCityWorld(worldName) then
+        return "town"
+    end
     local cellName = getCurrentCellName()
     if cellName:find("Tamriel") then
         return "overworld"
@@ -3045,11 +3629,8 @@ end
 -- UE5 cm → Oblivion unit conversion.
 -- Scale: 1 Oblivion unit ≈ 1/0.7 UE5 cm
 -- Y axis: negated between the two coordinate systems
-local UE5_TO_OBL = 0.7
-
--- Move the quest marker to (x,y,z) and activate it, but only send console commands
--- if the target has actually moved beyond MARKER_MOVE_THRESHOLD since the last update.
 local function updateAPXMarker(x, y, z)
+    local UE5_TO_OBL = 0.7
     if lastMarkerX then
         local dx = math.abs(x - lastMarkerX)
         local dy = math.abs(y - lastMarkerY)
@@ -3073,7 +3654,7 @@ local function updateAPXMarker(x, y, z)
     lastMarkerZ = z
 end
 
-local function clearAPXMarker()
+clearAPXMarker = function()
     if not lastMarkerX then return end
     pcall(function()
         console.ExecuteConsole("set APAutoTrackValid to 0")
@@ -3083,35 +3664,176 @@ local function clearAPXMarker()
     lastMarkerZ = nil
 end
 
-local function enableBossChestTracking()
+enableBossChestTracking = function()
     nirnrootTrackingEnabled = false
     bossChestTrackingEnabled = true
-    lastBossChestMessage = 0
-    lastTrackingUpdate = 0
+    lastBossChestMessage = os.clock()
+    lastTrackingUpdate = os.clock()
 end
 
-local function enableNirnrootTracking()
+tryEnableChestTrackingForCurrentCell = function()
+    if not shouldAutoTrack() or not chestInSeed then
+        disableAllAutoTrack()
+        return
+    end
+    local cellName = currentCellName or ""
+    if cellName == "" or currentCellIsOblivion then
+        disableAllAutoTrack()
+        return
+    end
+    local dungeon = require("MapPins").selectedDungeonForCell(cellName)
+    if dungeon and not isCompletionAlreadyRecorded(dungeon .. " Dungeon Cleared") then
+        enableBossChestTracking()
+        writeLog("Boss chest tracking for selected dungeon: " .. dungeon)
+    else
+        disableAllAutoTrack()
+    end
+end
+
+enableNirnrootTracking = function()
     bossChestTrackingEnabled = false
     nirnrootTrackingEnabled = true
     lastNirnrootMessage = os.clock() - NIRNROOT_MESSAGE_INTERVAL + 3
-    lastTrackingUpdate = 0
+    lastTrackingUpdate = os.clock()
 end
 
-local function disableAllAutoTrack()
+disableAllAutoTrack = function()
     nirnrootTrackingEnabled = false
     bossChestTrackingEnabled = false
 end
 
-local function shouldAutoTrack()
+shouldAutoTrack = function()
     return archipelagoSettings.auto_tracking and not autoTrackManualOff
 end
 
-local function processPendingFadeActions()
-    if apProbe.awaiting then return end
+function state.runDeferredFadeWorldSetup()
+    if not (killTrackingEnabled or archipelagoSettings.auto_tracking) then
+        return
+    end
 
-    if pendingCellLookup then
-        pendingCellLookup = false
-        startCellLookup()
+    currentCellName = nil
+    currentCellEditorID = nil
+    currentCellIsOblivion = false
+    cellNameRequestPending = false
+
+    local worldName = state.currentWorldFullName()
+
+    if worldName:find("Tamriel") then
+        currentCellName = "Tamriel"
+        currentCellIsOblivion = false
+        state.cellPending = false
+        writeLog("Cell set to Tamriel from world name")
+        pendingMarkerClear = true
+        if shouldAutoTrack() then
+            if nirnrootInSeed and not nirnrootManualOff then
+                pendingAutoTrack = "nirn"
+            else
+                pendingAutoTrack = "off"
+            end
+        else
+            pendingAutoTrack = "off"
+        end
+    elseif worldName:lower():find("oblivion") then
+        local mapName = worldName:match("/([^/]+)%.") or worldName:match("/([^/]+)$") or "Oblivion Plane"
+        currentCellName = mapName
+        currentCellIsOblivion = true
+        state.cellPending = false
+        writeLog("Cell set to Oblivion worldspace: " .. mapName)
+        if shouldAutoTrack() then
+            pendingAutoTrack = "off"
+            pendingMarkerClear = true
+        end
+    elseif state.matchCityWorld(worldName) then
+        currentCellName = state.matchCityWorld(worldName)
+        currentCellIsOblivion = false
+        state.cellPending = false
+        writeLog("Cell set to city world: " .. currentCellName)
+        pendingMarkerClear = true
+        pendingAutoTrack = "off"
+    elseif worldName ~= "" then
+        pendingCellLookup = true
+    else
+        state.fadeWorldSetup = true
+    end
+end
+
+function state.tryRestoreQuestPins()
+    if not state.pinsNeedRestore then
+        return
+    end
+    if not state.pinsRestoreArmed then
+        return
+    end
+    if state.travelling or state.isWorldUnstable() then
+        return
+    end
+    if state.cellPending or pendingCellLookup or cellNameRequestPending or cellLookupProbe.awaiting then
+        return
+    end
+    local cell = currentCellName or ""
+    if cell ~= "Tamriel" then
+        return
+    end
+    state.pinsNeedRestore = false
+    state.pinsRestoreArmed = false
+    local ok, err = pcall(function()
+        require("MapPins").restoreRegionPins()
+        require("BountyTracking").restoreBountyPins()
+    end)
+    if ok then
+        writeLog("Restored quest pins in '" .. cell .. "'")
+    else
+        state.pinsNeedRestore = true
+        writeLog("Quest pin restore failed: " .. tostring(err), "ERROR")
+    end
+end
+
+function state.processPendingFadeActions()
+    if state.firstInit then
+        state.firstInit = false
+        if not init.modFully then
+            writeLog("No init flags in memory. Reading settings file.")
+            handleInitialization()
+        end
+    end
+
+    if state.fadeWorldSetup then
+        state.fadeWorldSetup = false
+        state.runDeferredFadeWorldSetup()
+    end
+
+    if state.fadeWorldSetup then return end
+
+    -- Interiors: always start getparentcell here. Do not wait on AP sync.
+    if pendingCellLookup and not cellLookupProbe.awaiting then
+        state.startCellLookup()
+    end
+
+    if pendingCellLookup or cellLookupProbe.awaiting or state.cellPending then
+        return
+    end
+
+    -- Same two moments as quest pins: first in-game fade, and load after main menu.
+    if state.pinsNeedRestore and state.pinsRestoreArmed then
+        state.applySkillXpMultiplier()
+    end
+    state.tryRestoreQuestPins()
+
+    if apProbe.awaiting then
+        return
+    end
+
+    if state.apSyncOnStable then
+        state.apSyncOnStable = false
+        state.allowAPSync = checkValidSession()
+        if state.allowAPSync then
+            if not probeFinished and not apProbe.awaiting and not menuCheckInProgress() then
+                startAPSyncProbe()
+                state.probeStartedForSession = true
+            end
+        else
+            writeLog("Skipping APSync probe - no valid Archipelago session")
+        end
     end
 
     if pendingMarkerClear then
@@ -3120,7 +3842,7 @@ local function processPendingFadeActions()
     end
 
     if pendingAutoTrack == "boss" then
-        enableBossChestTracking()
+        tryEnableChestTrackingForCurrentCell()
         pendingAutoTrack = nil
     elseif pendingAutoTrack == "nirn" then
         enableNirnrootTracking()
@@ -3128,6 +3850,94 @@ local function processPendingFadeActions()
     elseif pendingAutoTrack == "off" then
         disableAllAutoTrack()
         pendingAutoTrack = nil
+    end
+
+    state.flushPendingKills()
+end
+
+-- Scan visible Nirnroot plants and update the compass marker.
+-- Harvested plants are bHidden and skipped.
+function state.scanNearestNirnroot(player, excludeX, excludeY, excludeZ)
+    if not player or not player:IsValid() then return nil, nil end
+
+    local playerLoc = player:K2_GetActorLocation()
+    local instances = FindAllOf("BP_NirnrootPlant_C")
+    local nearestDist = 99999999
+    local nearestDir = "?"
+    local nearestDistMeters = nil
+    local nearestLoc = nil
+    local excludeRadius = 200
+
+    pcall(function()
+        if not instances then return end
+        for _, obj in ipairs(instances) do
+            if obj and obj:IsValid() and obj.bHidden ~= true then
+                local loc = obj:K2_GetActorLocation()
+                local excluded = excludeX
+                    and math.abs(loc.X - excludeX) <= excludeRadius
+                    and math.abs(loc.Y - excludeY) <= excludeRadius
+                    and math.abs(loc.Z - excludeZ) <= excludeRadius
+                if not excluded then
+                    local dist = math.sqrt(
+                        (loc.X - playerLoc.X)^2 +
+                        (loc.Y - playerLoc.Y)^2 +
+                        (loc.Z - playerLoc.Z)^2
+                    )
+                    if dist < nearestDist then
+                        nearestDist = dist
+                        nearestDistMeters = math.floor(dist / 100)
+                        nearestLoc = loc
+                        local angle = math.atan(-(loc.Y - playerLoc.Y), loc.X - playerLoc.X) * (180 / math.pi)
+                        if angle < 0 then angle = angle + 360 end
+                        local dirs = {"E","NE","N","NW","W","SW","S","SE"}
+                        nearestDir = dirs[math.floor((angle + 22.5) / 45) % 8 + 1]
+                    end
+                end
+            end
+        end
+    end)
+
+    if nearestDistMeters and nearestLoc then
+        updateAPXMarker(nearestLoc.X, nearestLoc.Y, nearestLoc.Z)
+        if not archipelagoSettings.silent_auto_tracking then
+            pcall(function()
+                console.ExecuteConsole(string.format('Message "Nirnroot %s %dm"', nearestDir, nearestDistMeters))
+            end)
+        end
+        return nearestDir, nearestDistMeters
+    end
+    clearAPXMarker()
+    return nil, nil
+end
+
+function state.redetectNirnrootAfterHarvest()
+    if not nirnrootTrackingEnabled then
+        writeLog("Nirnroot harvest redetect skipped (tracking not active)")
+        return
+    end
+    pendingNirnrootRedetect = true
+    writeLog("Nirnroot harvest redetect queued")
+end
+
+function state.runQueuedNirnrootRedetect()
+    if not pendingNirnrootRedetect then return end
+    pendingNirnrootRedetect = false
+    if not nirnrootTrackingEnabled then
+        writeLog("Nirnroot harvest redetect skipped (tracking not active)")
+        return
+    end
+    local player = UEHelpers:GetPlayer()
+    if not player or not player:IsValid() then
+        writeLog("Nirnroot harvest redetect skipped (no player)")
+        return
+    end
+    lastNirnrootMessage = os.clock()
+    lastTrackingUpdate = os.clock()
+    local dir, meters = state.scanNearestNirnroot(player, lastMarkerX, lastMarkerY, lastMarkerZ)
+    if dir and meters then
+        writeLog(string.format("Nirnroot harvest redetect: %s %dm", dir, meters))
+    else
+        writeLog("Nirnroot harvest redetect: no other plant found")
     end
 end
 
@@ -3157,61 +3967,14 @@ local function updatePeriodicTracking()
     end
     
     local player = UEHelpers:GetPlayer()
-    if not player or not player:IsValid() then 
-        writeLog("Player not found or invalid for periodic tracking", "ERROR")
-        return 
+    if not player or not player:IsValid() then
+        return
     end
     
     -- Track Nirnroot
     if nirnrootTrackingEnabled and currentTime - lastNirnrootMessage >= NIRNROOT_MESSAGE_INTERVAL then
         lastNirnrootMessage = currentTime
-
-        local playerLoc = player:K2_GetActorLocation()
-        local instances = FindAllOf("BP_NirnrootPlant_C")
-        local nearestDist = 99999999
-        local nearestDir = "?"
-        local nearestDistMeters = nil
-        local nearestLoc = nil
-
-        pcall(function()
-            if instances then
-                for _, obj in ipairs(instances) do
-                    if obj and obj:IsValid() then
-                        -- bHidden == true means harvested or streamed out; skip those
-                        local isHidden = obj.bHidden
-                        if isHidden ~= true then
-                            local loc = obj:K2_GetActorLocation()
-                            local dist = math.sqrt(
-                                (loc.X - playerLoc.X)^2 +
-                                (loc.Y - playerLoc.Y)^2 +
-                                (loc.Z - playerLoc.Z)^2
-                            )
-                            if dist < nearestDist then
-                                nearestDist = dist
-                                nearestDistMeters = math.floor(dist / 100)
-                                nearestLoc = loc
-                                -- UE4 Y+ = South, so negate Y to get correct compass direction
-                                local angle = math.atan(-(loc.Y - playerLoc.Y), loc.X - playerLoc.X) * (180 / math.pi)
-                                if angle < 0 then angle = angle + 360 end
-                                local dirs = {"E","NE","N","NW","W","SW","S","SE"}
-                                nearestDir = dirs[math.floor((angle + 22.5) / 45) % 8 + 1]
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-
-        if nearestDistMeters and nearestLoc then
-            updateAPXMarker(nearestLoc.X, nearestLoc.Y, nearestLoc.Z)
-            if not archipelagoSettings.silent_auto_tracking then
-                pcall(function()
-                    console.ExecuteConsole(string.format('Message "Nirnroot %s %dm"', nearestDir, nearestDistMeters))
-                end)
-            end
-        else
-            clearAPXMarker()
-        end
+        state.scanNearestNirnroot(player)
     end
 
     -- Track Boss Chests
@@ -3224,7 +3987,9 @@ local function updatePeriodicTracking()
         -- Collect boss containers with distances
         local bossContainers = {}
         for formID, data in pairs(containers) do
-            if data.fullName:lower():match("boss") or data.name:lower():match("boss") or
+            local fn = data.fullName or ""
+            if fn:find("MythEnemyChest", 1, true) and not fn:find("BossChest", 1, true) then
+            elseif data.fullName:lower():match("boss") or data.name:lower():match("boss") or
                data.fullName:match("BattlehornChest") or data.fullName:match("DinningHallChest") then
                 local distance = math.sqrt(
                     (data.location.X - playerLoc.X)^2 +
@@ -3252,7 +4017,8 @@ local function updatePeriodicTracking()
 
             updateAPXMarker(nearestChest.location.X, nearestChest.location.Y, nearestChest.location.Z)
 
-            if not archipelagoSettings.silent_auto_tracking then
+            local suppressChestMessage = require("BountyTracking").shouldSuppressBossChestMessage()
+            if not archipelagoSettings.silent_auto_tracking and not suppressChestMessage then
                 local chestDir = "?"
                 pcall(function()
                     local angle = math.atan(
@@ -3273,15 +4039,329 @@ local function updatePeriodicTracking()
     end
 end
 
--- Initialize kill tracking system
-local function initializeKillTracking()
-    if not killTrackingEnabled then
+function state.killsPath()
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then
+        return nil
+    end
+    return getArchipelagoPath(filePrefix .. "_kills.txt")
+end
+
+function state.splitKillsFile(contents)
+    local dungeon, overworld, oblivion = nil, nil, nil
+    local log = {}
+    local bounty = {}
+    local licenses = {}
+    for raw in ((contents or "") .. "\n"):gmatch("(.-)\n") do
+        local line = raw:gsub("\r", "")
+        local site, n = line:match("^cull:(.+)=(%d+)$")
+        if site then
+            bounty[site] = tonumber(n) or 0
+        elseif line:match("^licenses=") then
+            local rest = line:match("^licenses=(.*)$") or ""
+            for cat in rest:gmatch("([^,]+)") do
+                local trimmed = (cat:match("^%s*(.-)%s*$") or ""):lower()
+                if trimmed ~= "" then
+                    licenses[trimmed] = true
+                end
+            end
+        else
+            local kind, count = line:match("^(%a+)=(%d+)$")
+            if kind == "dungeon" then
+                dungeon = tonumber(count) or 0
+            elseif kind == "overworld" then
+                overworld = tonumber(count) or 0
+            elseif kind == "oblivion" then
+                oblivion = tonumber(count) or 0
+            else
+                table.insert(log, line)
+            end
+        end
+    end
+    while log[1] == "" do
+        table.remove(log, 1)
+    end
+    while log[#log] == "" do
+        log[#log] = nil
+    end
+    return dungeon, overworld, log, bounty, oblivion, licenses
+end
+
+function state.importLegacyBountyFile(bounty)
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then return bounty end
+    if bounty and next(bounty) then return bounty end
+    local path = getArchipelagoPath(filePrefix .. "_bounty.txt")
+    local file = io.open(path, "r")
+    if not file then return bounty or {} end
+    bounty = bounty or {}
+    for line in file:lines() do
+        local site, n = line:match("^cull:(.+)=(%d+)$")
+        if site and n then
+            bounty[site] = tonumber(n) or 0
+        end
+    end
+    file:close()
+    return bounty
+end
+
+function state.getBountyProgress()
+    return killProgress.bounty or {}
+end
+
+function state.currentBountyProgress()
+    if state.bountyProgressReady then
+        local ok, progress = pcall(function()
+            return require("BountyTracking").bountyProgress()
+        end)
+        if ok and type(progress) == "table" then
+            return progress
+        end
+    end
+    return killProgress.bounty or {}
+end
+
+function state.loadKillProgress()
+    if killProgressLoaded then return end
+    killProgress.dungeon = 0
+    killProgress.overworld = 0
+    killProgress.oblivion = 0
+    killProgress.bounty = {}
+    state.weaponLicenses = state.weaponLicenses or {}
+    local path = state.killsPath()
+    if path then
+        local file = io.open(path, "r")
+        if file then
+            local dungeon, overworld, _, bounty, oblivion, licenses = state.splitKillsFile(file:read("*a") or "")
+            file:close()
+            if dungeon then killProgress.dungeon = dungeon end
+            if overworld then killProgress.overworld = overworld end
+            if oblivion then killProgress.oblivion = oblivion end
+            killProgress.bounty = bounty or {}
+            if licenses then
+                for cat, on in pairs(licenses) do
+                    if on then state.weaponLicenses[cat] = true end
+                end
+            end
+        end
+    end
+    killProgress.bounty = state.importLegacyBountyFile(killProgress.bounty)
+    local filePrefix = getCurrentFilePrefix()
+    if filePrefix and killProgress.dungeon == 0 and killProgress.overworld == 0 then
+        local legacy = getArchipelagoPath(filePrefix .. "_kill_progress.txt")
+        local file = io.open(legacy, "r")
+        if file then
+            for line in file:lines() do
+                local kind, count = line:match("^(%a+)=(%d+)$")
+                if (kind == "dungeon" or kind == "overworld" or kind == "oblivion") and count then
+                    killProgress[kind] = tonumber(count) or 0
+                end
+            end
+            file:close()
+        end
+    end
+    killProgressLoaded = true
+    writeLog(string.format("Loaded kill progress: dungeon=%d overworld=%d oblivion=%d",
+        killProgress.dungeon or 0, killProgress.overworld or 0, killProgress.oblivion or 0))
+end
+
+function state.writeKillsFile(newLogLine)
+    local path = state.killsPath()
+    if not path then return end
+    local log = {}
+    local file = io.open(path, "r")
+    if file then
+        local _, _, existing = state.splitKillsFile(file:read("*a") or "")
+        file:close()
+        log = existing
+    end
+    if newLogLine and newLogLine ~= "" then
+        table.insert(log, newLogLine)
+    end
+    local bounty = state.currentBountyProgress()
+    killProgress.bounty = bounty
+    file = io.open(path, "w")
+    if not file then return end
+    file:write(string.format("dungeon=%d\n", killProgress.dungeon or 0))
+    file:write(string.format("overworld=%d\n", killProgress.overworld or 0))
+    file:write(string.format("oblivion=%d\n", killProgress.oblivion or 0))
+    local licenseKeys = {}
+    for cat, on in pairs(state.weaponLicenses or {}) do
+        if on then table.insert(licenseKeys, cat) end
+    end
+    table.sort(licenseKeys)
+    if #licenseKeys > 0 then
+        file:write("licenses=" .. table.concat(licenseKeys, ",") .. "\n")
+    end
+    local keys = {}
+    for site in pairs(bounty) do
+        table.insert(keys, site)
+    end
+    table.sort(keys)
+    for _, site in ipairs(keys) do
+        file:write(string.format("cull:%s=%d\n", site, bounty[site] or 0))
+    end
+    for i = 1, #log do
+        file:write(log[i])
+        file:write("\n")
+    end
+    file:close()
+    local filePrefix = getCurrentFilePrefix()
+    if filePrefix then
+        pcall(os.remove, getArchipelagoPath(filePrefix .. "_kill_progress.txt"))
+        pcall(os.remove, getArchipelagoPath(filePrefix .. "_bounty.txt"))
+    end
+end
+
+function state.saveKillProgress()
+    state.writeKillsFile(nil)
+end
+
+function state.lastClearedDungeonFromCompletions()
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then return nil end
+    local path = getArchipelagoPath(filePrefix .. "_completed.txt")
+    local file = io.open(path, "r")
+    if not file then return nil end
+    local lastName = nil
+    for line in file:lines() do
+        local name = line:match("^(.+)%s+Dungeon Cleared$")
+        if name then
+            lastName = name:match("^%s*(.-)%s*$")
+        end
+    end
+    file:close()
+    return lastName
+end
+
+function state.resolveWarpMarker(dungeonName)
+    local markerId = dungeonName and config.dungeonMapMarkers[dungeonName]
+    if markerId and markerId ~= "" then
+        return markerId, false
+    end
+    return WARP_FALLBACK_MARKER, true
+end
+
+function state.offerDungeonWarp(clearedName)
+    local markerId, usedFallback = state.resolveWarpMarker(clearedName)
+    pendingWarpMarker = markerId
+    if usedFallback then
+        writeLog("No map marker for dungeon '" .. tostring(clearedName) .. "'; warp fallback " .. markerId, "WARNING")
+    end
+    local okWarp, errWarp = pcall(function()
+        console.ExecuteConsole("set APOfferWarp to 1")
+    end)
+    if okWarp then
+        writeLog("Set APOfferWarp to 1 for dungeon clear: " .. tostring(clearedName) .. " (" .. markerId .. ")")
+    else
+        writeLog("Failed to set APOfferWarp: " .. tostring(errWarp), "ERROR")
+    end
+end
+
+function state.applyPlayerKill(enemyData, killerName)
+    require("BountyTracking").onKill(enemyData)
+    local cellName = getCurrentCellName()
+    local cellKillType = getCellKillType()
+    local killToken
+    if cellKillType == "overworld" then
+        killToken = "Overworld Kill"
+    elseif cellKillType == "oblivion" then
+        killToken = "Oblivion Kill"
+    elseif cellKillType == "town" then
+        killToken = "Town Kill"
+    else
+        killToken = "Dungeon Kill"
+    end
+    local killTypeEnabled = (cellKillType == "overworld" and hasOverworldKillChecks)
+                         or (cellKillType == "dungeon" and hasDungeonKillChecks)
+                         or (cellKillType == "oblivion" and state.hasOblivionKillChecks)
+
+    local filePrefix = getCurrentFilePrefix()
+    local timestamp = os.date("%Y-%m-%d %H:%M:%S")
+    local levelStr = enemyData.level and (" Lv" .. enemyData.level) or ""
+    local loc = enemyData.location
+    local locationStr = ""
+    if loc then
+        locationStr = string.format(" at %.0f,%.0f,%.0f", loc.X, loc.Y, loc.Z)
+    end
+    local logLine = string.format("[%s] [%s] %s%s (FormID: %s) killed by %s with %s in %s%s",
+        timestamp, killToken, enemyData.name, levelStr, enemyData.formID,
+        killerName, enemyData.weaponType or "unknown", cellName, locationStr)
+
+    state.loadKillProgress()
+    local credited = true
+    if state.weaponLock and (cellKillType == "overworld" or cellKillType == "dungeon" or cellKillType == "oblivion") then
+        local category = "unknown"
+        if ActorDetection and ActorDetection.WeaponCategory then
+            category = ActorDetection.WeaponCategory(enemyData.weaponType)
+        end
+        if category == "unknown" or not (state.weaponLicenses and state.weaponLicenses[category]) then
+            credited = false
+            writeLog(string.format(
+                "Weapon lock skipped %s kill credit: %s with %s (category=%s)",
+                cellKillType, enemyData.name, tostring(enemyData.weaponType), category))
+        end
+    end
+    if killTrackingEnabled and killTypeEnabled and filePrefix and credited then
+        local kind = cellKillType
+        if kind ~= "overworld" and kind ~= "oblivion" then kind = "dungeon" end
+        local need
+        if kind == "overworld" then
+            need = overworldKillsPerCheck
+        elseif kind == "oblivion" then
+            need = state.oblivionKillsPerCheck or 2
+        else
+            need = dungeonKillsPerCheck
+        end
+        if need < 1 then need = 1 end
+        killProgress[kind] = (killProgress[kind] or 0) + 1
+        local awarded = 0
+        while killProgress[kind] >= need do
+            writeCompletionStatus(killToken)
+            killProgress[kind] = killProgress[kind] - need
+            awarded = awarded + 1
+        end
+        if awarded > 0 then
+            writeLog(string.format(
+                "Kill check written (%dx): %s in %s (%s) remainder=%d need=%d",
+                awarded, enemyData.name, cellName, killToken, killProgress[kind], need))
+        else
+            writeLog(string.format("Kill progress %s %d/%d: %s in %s",
+                kind, killProgress[kind], need, enemyData.name, cellName))
+        end
+    elseif not credited then
+        writeLog(string.format("Kill logged (weapon lock): %s in %s", enemyData.name, cellName))
+    else
+        writeLog(string.format("Kill logged (no AP checks configured for %s): %s in %s", killToken, enemyData.name, cellName))
+    end
+    state.writeKillsFile(logLine)
+end
+
+function state.recordPlayerKill(enemyData, killerName)
+    if ActorDetection and ActorDetection.IsSummoned(enemyData and enemyData.name) then
+        writeLog("Skipped summoned creature kill: " .. tostring(enemyData and enemyData.name))
         return
     end
-    
-    writeLog("Initializing kill tracking system")
-    
-    -- load ActorDetection module
+    if state.cellPending or pendingCellLookup or cellNameRequestPending or cellLookupProbe.awaiting then
+        table.insert(state.kills, { enemyData = enemyData, killerName = killerName })
+        return
+    end
+    state.applyPlayerKill(enemyData, killerName)
+end
+
+state.flushPendingKills = function()
+    if state.cellPending or pendingCellLookup or cellNameRequestPending or cellLookupProbe.awaiting then return end
+    if #state.kills == 0 then return end
+    local queued = state.kills
+    state.kills = {}
+    for _, rec in ipairs(queued) do
+        state.applyPlayerKill(rec.enemyData, rec.killerName)
+    end
+end
+
+local function initializeKillTracking()
+    writeLog("Initializing kill tracking")
+
     if not ActorDetection then
         local success, module = pcall(function() return require("ActorDetection") end)
         if not success then
@@ -3291,68 +4371,95 @@ local function initializeKillTracking()
         ActorDetection = module
     end
 
+    ActorDetection.SetLog(writeLog)
+    ActorDetection.SetTravelling(state.travelling)
+
     ActorDetection.Initialize(function(enemyData, killer)
-        -- Check if tracking still enabled
-        if not killTrackingEnabled then return end
-        
-        -- Determine killer name
         local killerName = "Unknown"
-        if killer and killer:IsValid() then
+        pcall(function()
+            if not killer or not killer:IsValid() then return end
             if killer:IsPlayerCharacter() then
                 killerName = "Player"
             else
                 local fullName = killer:GetFullName()
                 killerName = fullName:match("([^%.]+)$") or fullName
             end
-        end
-        
-        -- only log player kills
-        local isPlayerKill = (killerName == "Player")
-        if not isPlayerKill then return end
-        
-        -- Get current cell/world name
-        local cellName = getCurrentCellName()
-        local cellKillType = getCellKillType()
-        -- Oblivion plane kills are excluded from both overworld and dungeon counts
-        -- They are logged to the debug file but never written as AP check completions
-        -- Can be used if we add new checks for Oblivion kills
-        local killToken
-        if cellKillType == "overworld" then
-            killToken = "Overworld Kill"
-        elseif cellKillType == "oblivion" then
-            killToken = "Oblivion Kill"
-        else
-            killToken = "Dungeon Kill"
-        end
-        local killTypeEnabled = (cellKillType == "overworld" and hasOverworldKillChecks)
-                             or (cellKillType == "dungeon" and hasDungeonKillChecks)
-
-        -- Always log to _kills.txt for debug
-        local filePrefix = getCurrentFilePrefix()
-        local debugFilename = filePrefix and (filePrefix .. "_kills.txt") or "manual_kills.txt"
-        local killsPath = getArchipelagoPath(debugFilename)
-        local debugFile = io.open(killsPath, "a")
-        if debugFile then
-            local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-            local levelStr = enemyData.level and (" Lv" .. enemyData.level) or ""
-            local locationStr = string.format(" at %.0f,%.0f,%.0f",
-                enemyData.location.X, enemyData.location.Y, enemyData.location.Z)
-            debugFile:write(string.format("[%s] [%s] %s%s (FormID: %s) killed by %s in %s%s\n",
-                timestamp, killToken, enemyData.name, levelStr, enemyData.formID,
-                killerName, cellName, locationStr))
-            debugFile:close()
-        end
-
-        -- Write to _completed.txt for the AP client to process (only when kills are enabled)
-        if killTypeEnabled and filePrefix then
-            writeCompletionStatus(killToken)
-            writeLog(string.format("Kill check written: %s in %s (%s)", enemyData.name, cellName, killToken))
-        else
-            writeLog(string.format("Kill logged (no AP checks configured for %s): %s in %s", killToken, enemyData.name, cellName))
-        end
+        end)
+        if killerName ~= "Player" then return end
+        state.recordPlayerKill(enemyData, killerName)
     end)
-    
+
     writeLog("Kill tracking initialized successfully")
+end
+
+function state.applySkillXpMultiplier()
+    if skillXpApplied then return end
+    local n = tonumber(archipelagoSettings.skill_xp_multiplier) or 1
+    if n < 1 then n = 1 end
+    if n > 8 then n = 8 end
+    if n <= 1 then
+        skillXpApplied = true
+        return
+    end
+    -- setgs is not saved, so this is only for this Lua session.
+    local major = 0.75 / n
+    local minor = 0.88 / n
+    local ok, err = pcall(function()
+        console.ExecuteConsole(string.format("setgs fskillusemajormult %.6f", major))
+        console.ExecuteConsole(string.format("setgs fskilluseminormult %.6f", minor))
+    end)
+    if ok then
+        skillXpApplied = true
+        writeLog(string.format(
+            "Applied %dx skill XP: fskillusemajormult=%.6f fskilluseminormult=%.6f",
+            n, major, minor))
+    else
+        writeLog("Failed to apply skill XP multiplier: " .. tostring(err), "ERROR")
+    end
+end
+
+function state.initializeWeaponLicenses()
+    local filePrefix = getCurrentFilePrefix()
+    if not filePrefix then
+        return
+    end
+    local settingsPath = getArchipelagoPath(filePrefix .. "_settings.txt")
+    local file = io.open(settingsPath, "r")
+    if not file then
+        return
+    end
+    local initialized = false
+    for line in file:lines() do
+        local key, value = line:match("^(.-)=(.*)$")
+        if key == "weapon_licenses_initialized" and value == "True" then
+            initialized = true
+        end
+    end
+    file:close()
+    if initialized or not state.weaponLock then
+        return
+    end
+    local cats = { "blade", "blunt", "bow", "staff", "spell", "unarmed" }
+    for _, cat in ipairs(cats) do
+        local title = cat:sub(1, 1):upper() .. cat:sub(2)
+        local globalName = "APWeaponLicense" .. title .. "Blocked"
+        pcall(function()
+            console.ExecuteConsole("set " .. globalName .. " to 1")
+        end)
+        writeLog("Weapon license init: " .. globalName .. " = 1")
+    end
+    pcall(function()
+        console.ExecuteConsole("set APWeaponLicensesOn to 1")
+    end)
+    writeLog("Weapon licenses enabled - APWeaponLicensesOn set to 1")
+    file = io.open(settingsPath, "a")
+    if file then
+        file:write("weapon_licenses_initialized=True\n")
+        file:close()
+        writeLog("Marked weapon licenses as initialized in settings file")
+    else
+        writeLog("Failed to write weapon_licenses_initialized to settings file", "ERROR")
+    end
 end
 
 -- Main initialization function
@@ -3363,7 +4470,7 @@ function handleInitialization()
     end
 
     -- Retry encumbrance scaling if the object wasn't ready at script load
-    if not encumbranceScalingApplied then
+    if not init.encumbrance then
         applyEncumbranceScaling()
     end
 
@@ -3373,135 +4480,215 @@ function handleInitialization()
     if not settingsLoaded then
         return
     end
-    
-    -- Initialize kill tracking if enabled
-    if killTrackingEnabled then
-        initializeKillTracking()
+
+    state.loadKillProgress()
+    state.applySkillXpMultiplier()
+
+    local MapPins = require("MapPins")
+    MapPins.bind({
+        writeLog = writeLog,
+        getArchipelagoPath = getArchipelagoPath,
+        getCurrentFilePrefix = getCurrentFilePrefix,
+        getSelectedRegionDungeons = getSelectedRegionDungeons,
+        getSelectedRegions = getSelectedRegions,
+        isRegionUnlocked = isRegionUnlockedViaReceipts,
+    })
+    MapPins.reset()
+
+    local BountyTracking = require("BountyTracking")
+    BountyTracking.bind({
+        writeLog = writeLog,
+        getArchipelagoPath = getArchipelagoPath,
+        getCurrentFilePrefix = getCurrentFilePrefix,
+        isCompletionAlreadyRecorded = isCompletionAlreadyRecorded,
+        writeCompletionStatus = writeCompletionStatus,
+        getCurrentCellName = getCurrentCellName,
+        getCellKillType = getCellKillType,
+        getDungeonMarkerMode = function()
+            return archipelagoSettings.dungeon_marker_mode
+        end,
+        isCellLookupPending = function()
+            return pendingCellLookup or cellNameRequestPending
+        end,
+        offerDungeonWarp = state.offerDungeonWarp,
+        getBountyProgress = state.getBountyProgress,
+        markBountyProgressReady = function()
+            state.bountyProgressReady = true
+        end,
+    })
+    BountyTracking.loadState()
+    do
+        local prefix = getCurrentFilePrefix()
+        if prefix then
+            local bountyFile = io.open(getArchipelagoPath(prefix .. "_bounty.txt"), "r")
+            if bountyFile then
+                bountyFile:close()
+                state.writeKillsFile(nil)
+            end
+        end
     end
-    
-    -- If already initialized, we're done
-    if modFullyInitialized then return end
+    initializeKillTracking()
+
+    -- mod_fully_initialized only means goal globals were written. Any missed or needed
+    -- inits still run.
+    local continuingSession = init.modFully
     
     -- Handle initialization tasks (only once, when safe to run console commands)
-    if needsProgressiveShopStockInit then
+    if init.needsShopStock then
         writeLog("Initializing progressive shop stock...")
-        needsProgressiveShopStockInit = false
+        init.needsShopStock = false
         local success, error = pcall(initializeShopsanity)
         if success then
-            progressiveShopStockInitialized = true
+            init.shopStock = true
             writeLog("Progressive shop stock initialization successful")
         else
             writeLog("Progressive shop stock initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsArenaInit then
+    if init.needsArena then
         writeLog("Initializing arena...")
-        needsArenaInit = false
+        init.needsArena = false
         local success, error = pcall(initializeArena)
         if success then
-            arenaInitialized = true
+            init.arena = true
             writeLog("Arena initialization successful")
         else
             writeLog("Arena initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsShrinesInit then
+    if init.needsShrines then
         writeLog("Initializing shrines...")
-        needsShrinesInit = false
+        init.needsShrines = false
         local success, error = pcall(initializeShrines)
         if success then
-            shrinesInitialized = true
+            init.shrines = true
             writeLog("Shrine initialization successful")
         else
             writeLog("Shrine initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsSidequestsInit then
+    if init.needsSidequests then
         writeLog("Initializing sidequests...")
-        needsSidequestsInit = false
+        init.needsSidequests = false
         local success, error = pcall(initializeSidequests)
         if success then
-            sidequestsInitialized = true
+            init.sidequests = true
             writeLog("Sidequest initialization successful")
         else
             writeLog("Sidequest initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsGatesInit then
-        needsGatesInit = false
+    if init.needsGates then
+        init.needsGates = false
         local success, error = pcall(initializeGates)
         if success then
-            gatesInitialized = true
+            init.gates = true
             writeLog("Oblivion Gate initialization complete")
         else
             writeLog("Gates initialization failed: " .. tostring(error), "ERROR")
         end
     end
 
-    if needsDoomstonesInit then
-        needsDoomstonesInit = false
+    if init.needsDoomstones then
+        init.needsDoomstones = false
         local success, error = pcall(initializeDoomstones)
         if success then
-            doomstonesInitialized = true
+            init.doomstones = true
             writeLog("Doomstone initialization complete")
         else
             writeLog("Doomstones initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsGateVisionInit and gatesInitialized then
-        needsGateVisionInit = false
+    if init.needsGateVision and init.gates then
+        init.needsGateVision = false
         local success, error = pcall(initializeGateVision)
         if success then
-            gateVisionInitialized = true
+            init.gateVision = true
             writeLog("Gate vision initialization successful")
         else
             writeLog("Gate vision initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsFastTravelInit then
+    if init.needsFastTravel then
         writeLog("Initializing fast travel...")
-        needsFastTravelInit = false
+        init.needsFastTravel = false
         local success, error = pcall(initializeFastTravel)
         if success then
-            fastTravelInitialized = true
+            init.fastTravel = true
             writeLog("Fast travel initialization successful")
         else
             writeLog("Fast travel initialization failed: " .. tostring(error), "ERROR")
         end
     end
     
-    if needsClassSystemInit then
+    if init.needsClassSystem then
         writeLog("Initializing class system...")
-        needsClassSystemInit = false
+        init.needsClassSystem = false
         local success, error = pcall(initializeClassSystem)
         if success then
-            classSystemInitialized = true
+            init.classSystem = true
             writeLog("Class system initialization successful")
         else
             writeLog("Class system initialization failed: " .. tostring(error), "ERROR")
         end
     end
 
-    if needsDungeonCountersInit then
+    if init.needsDungeonCounters then
         writeLog("Initializing dungeon counters...")
-        needsDungeonCountersInit = false
+        init.needsDungeonCounters = false
         local success, error = pcall(initializeDungeonCounters)
         if success ~= false then -- initializeDungeonCounters returns nil on success
-            dungeonCountersInitialized = true
+            init.dungeonCounters = true
             writeLog("Dungeon counters initialization successful")
         else
             writeLog("Dungeon counters initialization failed: " .. tostring(error), "ERROR")
         end
     end
+
+    if init.needsBounties then
+        writeLog("Initializing bounty contracts...")
+        init.needsBounties = false
+        local success, error = pcall(function()
+            require("BountyTracking").initialize()
+        end)
+        if success ~= false then
+            init.bounties = true
+            writeLog("Bounty initialization successful")
+        else
+            writeLog("Bounty initialization failed: " .. tostring(error), "ERROR")
+        end
+    end
+
+    if init.needsWeaponLicenses then
+        writeLog("Initializing weapon licenses...")
+        init.needsWeaponLicenses = false
+        local success, error = pcall(state.initializeWeaponLicenses)
+        if success then
+            init.weaponLicenses = true
+            writeLog("Weapon license initialization successful")
+        else
+            writeLog("Weapon license initialization failed: " .. tostring(error), "ERROR")
+        end
+    end
     
     -- Set goal globals and mark initialization complete (only once per seed)
-    if not modFullyInitialized then
+    if continuingSession then
+        writeLog("------------------------------------------")
+        writeLog("Settings file validated: already initialized. Pending subsystem inits already complete.")
+        writeLog("------------------------------------------")
+        state.pinsNeedRestore = true
+        if currentCellName and currentCellName ~= "" and not state.travelling then
+            state.pinsRestoreArmed = true
+        end
+        return
+    end
+    if not init.modFully then
         -- Validate currentGoal is set before attempting
         if currentGoal == "" then
             writeLog("Cannot initialize - no goal found in settings", "ERROR")
@@ -3563,6 +4750,12 @@ function handleInitialization()
                 console.ExecuteConsole("set APGoal to 6")
             elseif currentGoal == "treasure_hunter" then
                 console.ExecuteConsole("set APGoal to 7")
+            elseif currentGoal == "bounty_hunter" then
+                console.ExecuteConsole("set APGoal to 8")
+            end
+            if archipelagoSettings.ap_tips then
+                console.ExecuteConsole("set APTipsEnabled to 1")
+                writeLog("Set APTipsEnabled to 1")
             end
         end)
         
@@ -3575,7 +4768,7 @@ function handleInitialization()
         end
         
         -- Mark as fully initialized
-        modFullyInitialized = true
+        init.modFully = true
         writeLog("")
         writeLog("==========================================")
         writeLog("ARCHIPELAGO MOD INITIALIZATION COMPLETE")
@@ -3593,38 +4786,60 @@ function handleInitialization()
         else
             writeLog("Failed to write mod_fully_initialized to settings file", "ERROR")
         end
-    -- After a fresh initialization, treat the next APAppliedCount=0 as a catch-up, not a reinit prompt
-    suppressReinitOnNextZero = true
+        -- After a fresh initialization, treat the next APAppliedCount=0 as a catch-up, not a reinit prompt
+        suppressReinitOnNextZero = true
     end
 end
 
--- Track initialization completion for 3-second delay
-local initializationCompleteTime = 0
-local itemProcessingEnabled = false
-
--- Periodic processing function - handles ongoing item processing only
-local function handlePeriodicProcessing()
-    frameCounter = frameCounter + 1
-    if frameCounter >= targetFrames then
-        frameCounter = 0       
-        
-    -- Re-check for a valid session every ~5s; also handle mid-session disconnects
-    local sessionValid = checkValidSession()
-    if sessionValid and not allowAPSync then
-        writeLog("Valid AP session detected mid-game")
-        allowAPSync = true
-        probeStartedForSession = false
-    elseif not sessionValid then
-        allowAPSync = false
-        probeStartedForSession = false
+function state.drainBridgeFiles()
+    if not init.modFully then
+        return
+    end
+    if not init.itemProcessingEnabled then
+        init.initializationCompleteTime = os.time()
+        init.itemProcessingEnabled = true
+        writeLog("Initialization complete - starting 3-second delay before item processing")
+        return
+    end
+    if (os.time() - init.initializationCompleteTime) < 3 then
+        return
     end
 
-    if (not modFullyInitialized) or (not sessionValid) then
+    processItemEvents()
+
+    if probeFinished and hasItemsInQueue() then
+        processItemQueue()
+    end
+
+    processTrapQueue()
+    processDeathlinkSignal()
+    processMessageboxQueue()
+end
+
+function state.handlePeriodicProcessing()
+    state.drainBridgeFiles()
+
+    local now = os.clock()
+    if now < state.nextSessionAt then
+        return
+    end
+    state.nextSessionAt = now + 5
+
+    local sessionValid = checkValidSession()
+    if sessionValid and not state.allowAPSync then
+        writeLog("Valid AP session detected mid-game")
+        state.allowAPSync = true
+        state.probeStartedForSession = false
+    elseif not sessionValid then
+        state.allowAPSync = false
+        state.probeStartedForSession = false
+    end
+
+    if (not init.modFully) or (not sessionValid) then
         handleInitialization()
     end
 
-    -- Periodic encumbrance validation: re-apply if needed
-    if encumbranceScalingApplied then
+    if init.encumbrance then
         local currentTime = os.time()
         if currentTime - lastEncumbranceValidation >= ENCUMBRANCE_VALIDATION_INTERVAL then
             lastEncumbranceValidation = currentTime
@@ -3632,307 +4847,238 @@ local function handlePeriodicProcessing()
         end
     end
 
-    -- Start probe AFTER initialization to avoid reading init console output as APAppliedCount.
-    if allowAPSync and modFullyInitialized and not probeFinished and not apProbe.awaiting and not probeStartedForSession
-        and not menuCheckInProgress() then
-        probeStartedForSession = true
+    if state.allowAPSync and init.modFully and not probeFinished and not apProbe.awaiting and not state.probeStartedForSession
+        and not menuCheckInProgress()
+        and not state.fadeWorldSetup
+        and not pendingCellLookup
+        and not cellLookupProbe.awaiting
+        and not state.cellPending
+        and not cellNameRequestPending
+        and not state.apSyncOnStable then
+        state.probeStartedForSession = true
         writeLog("Starting APSync probe (post-init)")
         startAPSyncProbe()
     end
-        
-        -- Start 3-second timer when initialization completes
-        if modFullyInitialized and not itemProcessingEnabled then
-            initializationCompleteTime = os.time()
-            itemProcessingEnabled = true
-            writeLog("Initialization complete - starting 3-second delay before item processing")
-        end
-        
-        -- Check if there are items in the queue (only if mod is fully initialized and 3 seconds have passed)
-        if modFullyInitialized and itemProcessingEnabled then
-            local currentTime = os.time()
-            if currentTime - initializationCompleteTime >= 3 then
-                local hasItems = hasItemsInQueue()
-                if hasItems then
-                    -- Gate item processing until APsync has completed
-                    if not probeFinished then
-                        -- Only increment if we haven't reached the limit
-                        if probeAttemptCount < 3 then
-                            probeAttemptCount = probeAttemptCount + 1
-                            writeLog("Delaying item processing until APsync completes (attempt " .. probeAttemptCount .. "/3)")
-                        end
-                        
-                        if probeAttemptCount >= 3 then
-                            if not probeStuckMessageShown then
-                                writeLog("APsync probe failed after 3 attempts - restarting probe", "ERROR")
-                                pcall(function()
-                                    console.ExecuteConsole('Message "APSync Probe stuck - restarting probe attempt"')
-                                end)
-                                probeStuckMessageShown = true
-                            end
-                            -- Kill current probe and restart
-                            apProbe.awaiting = false
-                            probeAttemptCount = 0
-                            probeStuckMessageShown = false
-                            if allowAPSync and not menuCheckInProgress() then
-                                startAPSyncProbe()
-                            end
-                        end
-                    else
-                        probeAttemptCount = 0
-                        probeStuckMessageShown = false
-                        processItemQueue()
-                    end
-                end
-                
-                -- Process item events for display
-                processItemEvents()
-
-                -- Process any pending traps
-                processTrapQueue()
-
-                -- Process incoming deathlink from AP client
-                processDeathlinkSignal()
-            end
-        end
-        
-        -- Process messagebox queue
-        processMessageboxQueue()
-    end
 end
 
--- Use fade-in hook for startup, then switch to tick hook for ongoing processing
-local tickHookLoaded = false
-local gameStarted = false
-local notificationHookRegistered = false
--- Only allow AP sync probe and messaging when a valid AP session is detected
-local allowAPSync = false
-
-local probeStartedForSession = false
-
--- Register fade-in hook for initial startup
-RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", function()
-    -- Reset probe state for this load
-    probeFinished = false
-    probeStartedForSession = false
-    probeAttemptCount = 0  -- Reset attempt counter on each load
-    pendingMenuReinitCheck = false
-    menuCheckProbe.awaiting = false
-    if not gameStarted then
-        writeLog("Game fade-in detected")
-        gameStarted = true
-        
-        if not modFullyInitialized then
-            writeLog("Mod not fully initialized - running initialization")
-            handleInitialization()
-        else
-            writeLog("Mod already fully initialized - skipping initialization")
+function state.ensureTutorialHooks()
+    if not setupNewDisplayHooked then
+        local success = pcall(function()
+            RegisterHook("Function /Game/UI/Modern/HUD/Tutorial/WBP_ModernTutorialDisplay.WBP_ModernTutorialDisplay_C:SetupNewDisplay", InterceptTutorialDisplay)
+        end)
+        if success then
+            writeLog("Successfully hooked SetupNewDisplay")
+            setupNewDisplayHooked = true
         end
-        
-        if not tickHookLoaded then
-            RegisterHook("/Game/Dev/PlayerBlueprints/BP_OblivionPlayerCharacter.BP_OblivionPlayerCharacter_C:ReceiveTick", function()
-                local currentTime = os.time()
+    end
+    if not setMenuModeHooked then
+        local success = pcall(function()
+            RegisterHook("Function /Game/UI/Modern/HUD/Tutorial/WBP_ModernTutorialDisplay.WBP_ModernTutorialDisplay_C:SetMenuMode", function(context)
+                local widget = context:get()
+                if not widget or not widget:IsValid() then return end
+                local inMenuNow = false
+                local okMenu, resMenu = pcall(IsPlayerInMenu)
+                if okMenu then inMenuNow = resMenu end
 
-                -- Icarian Flight trap
-                if pendingIcarianFlight then
-                    pendingIcarianFlight = false
-                    executeIcarianLaunch()
-                end
-
-                -- Consume F11 toggle flag here
-                if pendingTrackingToggle then
-                    pendingTrackingToggle = false
-                    if not nirnrootTrackingEnabled and not bossChestTrackingEnabled then
-                        -- OFF → next mode. Skip types not in seed or manually suppressed.
-                        autoTrackManualOff = false
-                        local canNirn = nirnrootInSeed and not nirnrootManualOff
-                        local canChest = chestInSeed
-                        if canNirn then
-                            nirnrootTrackingEnabled = true
-                            lastNirnrootMessage = os.clock() - NIRNROOT_MESSAGE_INTERVAL + 3
-                            lastTrackingUpdate = 0
-                            pcall(function() console.ExecuteConsole('Message "Tracking Nirnroot"') end)
-                        elseif canChest then
-                            bossChestTrackingEnabled = true
-                            lastBossChestMessage = 0
-                            lastTrackingUpdate = 0
-                            pcall(function() console.ExecuteConsole('Message "Tracking Boss Chests"') end)
-                        else
-                            autoTrackManualOff = true
-                            clearAPXMarker()
-                            pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
-                        end
-                    elseif nirnrootTrackingEnabled then
-                        nirnrootTrackingEnabled = false
-                        if chestInSeed then
-                            clearAPXMarker()
-                            bossChestTrackingEnabled = true
-                            lastBossChestMessage = 0
-                            lastTrackingUpdate = 0
-                            pcall(function() console.ExecuteConsole('Message "Tracking Boss Chests"') end)
-                        else
-                            autoTrackManualOff = true
-                            clearAPXMarker()
-                            pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
-                        end
-                    else
-                        bossChestTrackingEnabled = false
-                        autoTrackManualOff = true
-                        clearAPXMarker()
-                        pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
-                    end
-                end
-
-                -- Always run periodic processing (items, events, retries, etc.)
-                handlePeriodicProcessing()
-
-                readCellLookupConsole()
-                processPendingMenuReinitCheck()
-                apReadConsoleAndEmitCount()
-                processPendingFadeActions()
-
-                if nirnrootTrackingEnabled or bossChestTrackingEnabled then
-                    updatePeriodicTracking()
-                end
-
-                
-                -- Ensure tutorial hooks are registered
-                if not setupNewDisplayHooked then
-                    local success = pcall(function()
-                        RegisterHook("Function /Game/UI/Modern/HUD/Tutorial/WBP_ModernTutorialDisplay.WBP_ModernTutorialDisplay_C:SetupNewDisplay", InterceptTutorialDisplay)
+                if inMenuNow then
+                    local isActive = false
+                    pcall(function()
+                        if widget.CurrentDisplayTime and widget.CurrentDisplayTime > 0.0 then isActive = true end
                     end)
-                    if success then
-                        writeLog("Successfully hooked SetupNewDisplay")
-                        setupNewDisplayHooked = true
-                    end
-                end
-                if not setMenuModeHooked then
-                    local success = pcall(function()
-                        RegisterHook("Function /Game/UI/Modern/HUD/Tutorial/WBP_ModernTutorialDisplay.WBP_ModernTutorialDisplay_C:SetMenuMode", function(context)
-                            local widget = context:get()
-                            if not widget or not widget:IsValid() then return end
-                            -- When menu state changes, re-broadcast the active message to restore text if cleared
-                            local inMenuNow = false
-                            local okMenu, resMenu = pcall(IsPlayerInMenu)
-                            if okMenu then inMenuNow = resMenu end
-                            
-                            if inMenuNow then
-                                -- If a tutorial is currently active and it's our AP message, convert it to a console Message
-                                local isActive = false
-                                pcall(function()
-                                    if widget.CurrentDisplayTime and widget.CurrentDisplayTime > 0.0 then isActive = true end
-                                end)
-                                if isActive and lastAPTutorialMessage ~= "" then
-                                    pcall(function()
-                                        console.ExecuteConsole("Message \"" .. escapeForConsole(lastAPTutorialMessage) .. "\"")
-                                    end)
-                                    lastAPTutorialMessage = ""
-                                end
-                                -- Entered a menu: decisively close the tutorial box
-                                CloseTutorialByTimeSqueeze(widget)
-                                HardHideTutorialWidget(widget)
-                            end
-                            -- Menu baseline tracking not needed beyond this point
-                        end)
-                    end)
-                    if success then
-                        writeLog("Successfully hooked SetMenuMode")
-                        setMenuModeHooked = true
-                    end
-                end
-                -- Freeze watcher: on transition to freezing, convert AP message to console then close the tutorial display
-                local isFreezing = isGameFreezing()
-                if isFreezing and not lastFreezeState then
-                    local widget = FindByName("WBP_ModernTutorialDisplay_C", "WBP_PrimaryGameLayout_C")
-                    if widget and widget.IsValid and widget:IsValid() and lastAPTutorialMessage ~= "" then
-                        local isActive = false
+                    state.expireAPTutorialFallbackIfNeeded()
+                    if isActive and lastAPTutorialMessage ~= "" then
                         pcall(function()
-                            if widget.CurrentDisplayTime and widget.CurrentDisplayTime > 0.0 then isActive = true end
+                            console.ExecuteConsole("Message \"" .. escapeForConsole(lastAPTutorialMessage) .. "\"")
                         end)
-                        if isActive then
-                            pcall(function()
-                                console.ExecuteConsole("Message \"" .. escapeForConsole(lastAPTutorialMessage) .. "\"")
-                            end)
-                            lastAPTutorialMessage = ""
-                        end
+                        lastAPTutorialMessage = ""
                     end
                     CloseTutorialByTimeSqueeze(widget)
                     HardHideTutorialWidget(widget)
                 end
-                lastFreezeState = isFreezing
             end)
-            tickHookLoaded = true
-            writeLog("Tick hook registered for ongoing processing")
-        end
-    end
-
-    -- Deploy APSync Probe per OnFadeToGameBeginEvent (only if client is connected).
-    allowAPSync = checkValidSession()
-    if allowAPSync then
-        if not probeFinished and not apProbe.awaiting and not menuCheckInProgress() then
-            startAPSyncProbe()
-            probeStartedForSession = true
-        end
-    else
-        writeLog("Skipping APSync probe - no valid Archipelago session")
-    end
-
-    -- On cell transition: refresh cell state and clear the actor table
-    -- Runs when kill tracking OR auto-track mode is active.
-    if killTrackingEnabled or archipelagoSettings.auto_tracking then
-        currentCellName = nil
-        currentCellEditorID = nil
-        currentCellIsOblivion = false
-        cellNameRequestPending = false
-
-        -- Detect worldspace directly from the world name.
-        local worldName = ""
-        pcall(function()
-            local player = UEHelpers:GetPlayer()
-            if player and player:IsValid() then
-                worldName = player:GetWorld():GetFullName() or ""
-            end
         end)
+        if success then
+            writeLog("Successfully hooked SetMenuMode")
+            setMenuModeHooked = true
+        end
+    end
+end
 
-        if worldName:find("Tamriel") then
-            currentCellName = "Tamriel"
-            currentCellIsOblivion = false
-            writeLog("Cell set to Tamriel from world name")
-            pendingMarkerClear = true
-            if shouldAutoTrack() then
-                if nirnrootInSeed and not nirnrootManualOff then
-                    pendingAutoTrack = "nirn"
+function state.runPeriodicModWork()
+    if state.isWorldUnstable() then
+        state.loggedSkip = true
+        return
+    end
+    state.loggedSkip = false
+
+    if pendingTrackingToggle then
+        pendingTrackingToggle = false
+        if not nirnrootTrackingEnabled and not bossChestTrackingEnabled then
+            autoTrackManualOff = false
+            local canNirn = nirnrootInSeed and not nirnrootManualOff
+            local canChest = chestInSeed
+            if canNirn then
+                nirnrootTrackingEnabled = true
+                lastNirnrootMessage = os.clock() - NIRNROOT_MESSAGE_INTERVAL + 3
+                lastTrackingUpdate = 0
+                pcall(function() console.ExecuteConsole('Message "Tracking Nirnroot"') end)
+            elseif canChest then
+                tryEnableChestTrackingForCurrentCell()
+                if bossChestTrackingEnabled then
+                    pcall(function() console.ExecuteConsole('Message "Tracking Boss Chests"') end)
                 else
-                    pendingAutoTrack = "off"
+                    autoTrackManualOff = true
+                    clearAPXMarker()
+                    pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
                 end
             else
-                pendingAutoTrack = "off"
+                autoTrackManualOff = true
+                clearAPXMarker()
+                pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
             end
-        elseif worldName:lower():find("oblivion") then
-            -- Oblivion worldspace (exterior Oblivion plane, e.g. OblivionRD001, OblivionMQKvatch)
-            local mapName = worldName:match("/([^/]+)%.") or worldName:match("/([^/]+)$") or "Oblivion Plane"
-            currentCellName = mapName
-            currentCellIsOblivion = true
-            writeLog("Cell set to Oblivion worldspace: " .. mapName)
-            if shouldAutoTrack() then
-                pendingAutoTrack = "off"
-                pendingMarkerClear = true
+        elseif nirnrootTrackingEnabled then
+            nirnrootTrackingEnabled = false
+            if chestInSeed then
+                clearAPXMarker()
+                tryEnableChestTrackingForCurrentCell()
+                if bossChestTrackingEnabled then
+                    pcall(function() console.ExecuteConsole('Message "Tracking Boss Chests"') end)
+                else
+                    autoTrackManualOff = true
+                    pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
+                end
+            else
+                autoTrackManualOff = true
+                clearAPXMarker()
+                pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
             end
         else
-            pendingCellLookup = true
-            cellNameRequestPending = true
-            if shouldAutoTrack() and chestInSeed then
-                pendingMarkerClear = true
-                pendingAutoTrack = "boss"
-            end
+            bossChestTrackingEnabled = false
+            autoTrackManualOff = true
+            clearAPXMarker()
+            pcall(function() console.ExecuteConsole('Message "Tracking OFF"') end)
         end
+    end
 
-        if killTrackingEnabled and ActorDetection then
-            ActorDetection.ClearKilledActors()
+    state.handlePeriodicProcessing()
+
+    state.readCellLookupConsole()
+    state.expireCellLookupIfStuck()
+    processPendingMenuReinitCheck()
+    apReadConsoleAndEmitCount()
+    state.processPendingFadeActions()
+    state.ensureTutorialHooks()
+    state.expireAPTutorialFallbackIfNeeded()
+    state.processTutorialQueue()
+
+    if not state.isWorldUnstable() then
+        state.runQueuedNirnrootRedetect()
+        if nirnrootTrackingEnabled or bossChestTrackingEnabled then
+            updatePeriodicTracking()
         end
+        require("BountyTracking").updateTracking()
+
+        local isFreezing = isGameFreezing()
+        if isFreezing and not lastFreezeState then
+            local widget = getTutorialWidget()
+            state.expireAPTutorialFallbackIfNeeded()
+            if widget and widget.IsValid and widget:IsValid() and lastAPTutorialMessage ~= "" then
+                local isActive = false
+                pcall(function()
+                    if widget.CurrentDisplayTime and widget.CurrentDisplayTime > 0.0 then isActive = true end
+                end)
+                if isActive then
+                    pcall(function()
+                        console.ExecuteConsole("Message \"" .. escapeForConsole(lastAPTutorialMessage) .. "\"")
+                    end)
+                    lastAPTutorialMessage = ""
+                end
+            end
+            CloseTutorialByTimeSqueeze(widget)
+            HardHideTutorialWidget(widget)
+        end
+        lastFreezeState = isFreezing
+    end
+end
+
+function state.startPeriodicLoop()
+    if state.started then return end
+    state.started = true
+    RegisterHook("/Game/Dev/PlayerBlueprints/BP_OblivionPlayerCharacter.BP_OblivionPlayerCharacter_C:ReceiveTick", function()
+        if pendingIcarianFlight then
+            pendingIcarianFlight = false
+            pcall(executeIcarianLaunch)
+        end
+        local now = os.clock()
+        if now < state.nextPeriodAt then
+            return
+        end
+        state.nextPeriodAt = now + (state.periodMs / 1000)
+        local ok, err = pcall(state.runPeriodicModWork)
+        if not ok then
+            writeLog("Periodic tick error: " .. tostring(err), "ERROR")
+        end
+    end)
+    writeLog("Tick hook registered for ongoing processing (2026-08-25-B)")
+end
+
+RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToBlackBeginEventReceived", function()
+    state.markTravelling("fade-to-black")
+end)
+
+RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToBlackOverBeforeFastTravel", function()
+    state.markTravelling("fade-to-black-fast-travel")
+end)
+
+state.tryRegisterHook("/Script/Altar.VEnhancedAltarPlayerController:OnLoadStarted", function()
+    state.markTravelling("load-started")
+    -- Save load can reset AP pin refs to ESP defaults. Re-place in Tamriel only.
+    state.pinsNeedRestore = true
+    state.pinsRestoreArmed = false
+end, "OnLoadStarted")
+
+state.tryRegisterHook("/Script/Altar.VEnhancedAltarPlayerController:OnLoadFinished", function()
+    writeLog("Load finished (waiting for fade-to-game to resume)")
+end, "OnLoadFinished")
+
+state.tryRegisterHook("/Script/Altar.VDoor:OnBeginOverlapPreLoadBox", function()
+    state.markTravelling("door-preload")
+end, "VDoor:OnBeginOverlapPreLoadBox")
+
+RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", function()
+    state.markArrived("fade-to-game")
+
+    -- Reset probe state for this load
+    probeFinished = false
+    state.probeStartedForSession = false
+    probeAttemptCount = 0  -- Reset attempt counter on each load
+    pendingMenuReinitCheck = false
+    menuCheckProbe.awaiting = false
+
+    state.fadeWorldSetup = true
+    state.apSyncOnStable = true
+    state.cellPending = true
+
+    if killTrackingEnabled and ActorDetection then
+        ActorDetection.ClearKilledActors()
+    end
+
+    if not state.gameStarted then
+        writeLog("Game fade-in detected")
+        state.gameStarted = true
+        if not init.modFully then
+            writeLog("No init flags in memory. Reading settings file.")
+            handleInitialization()
+        else
+            writeLog("------------------------------------------")
+            writeLog("Settings file validated: already initialized. No initialization will run.")
+            writeLog("------------------------------------------")
+        end
+        state.startPeriodicLoop()
     end
     
     -- Register notification hook for event tracking (guard to prevent duplicates)
-        if not notificationHookRegistered then
+        if not state.notificationHookRegistered then
         RegisterHook("Function /Script/Altar.VHUDSubtitleViewModel:ConsumeNotification", function(hudVM)
             if not hudVM then
                 return
@@ -3954,11 +5100,23 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 return
             end
 
-            -- Shorten vanilla inventory add notifications
-            if text:match('^%d+ .- added to the player\'s inventory$')
-               and not text:match('^%d+ AP .- Completion Token added to the player\'s inventory$') then
+            -- Shorten vanilla inventory add notifications.
+            -- Completion tokens are checks and must fall through to the handler below.
+            -- During a bulk grant, keep the toast visible but much shorter so the queue can drain.
+            local inventoryText = text
+                :gsub("\226\128[\152\153]", "'")
+                :gsub("\194\180", "'")
+                :gsub("\239\188\135", "'")
+                :gsub("`", "'")
+            if inventoryText:match("^%d+ .- added to the player's inventory$")
+               and not inventoryText:match("Completion Token added to the player's inventory") then
                 pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 1.5
+                    local original = tonumber(actualHudVM.Notification.ShowSeconds)
+                    if original and original > 0.5 and not loggedInventoryNotifyDefault then
+                        loggedInventoryNotifyDefault = true
+                        writeLog("Vanilla inventory notification duration: " .. tostring(original) .. "s")
+                    end
+                    actualHudVM.Notification.ShowSeconds = bulkItemGrantInProgress and 0.45 or 1
                 end)
                 return
             end
@@ -3980,6 +5138,38 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
             if text == "APExecuteIcarianFlight" then
                 actualHudVM.Notification.ShowSeconds = 0.0001
                 DoIcarianFlightTrap()
+                return
+            end
+
+            if text == "Warp accepted" then
+                actualHudVM.Notification.ShowSeconds = 0.0001
+                local marker = pendingWarpMarker
+                if not marker or marker == "" then
+                    local clearedName = state.lastClearedDungeonFromCompletions()
+                    local usedFallback
+                    marker, usedFallback = state.resolveWarpMarker(clearedName)
+                    if usedFallback then
+                        writeLog("Warp accepted with no stored marker; dungeon='" .. tostring(clearedName) .. "' fallback " .. marker, "WARNING")
+                    else
+                        writeLog("Warp accepted after reload; restored marker for '" .. tostring(clearedName) .. "'")
+                    end
+                end
+                pendingWarpMarker = nil
+                local ok, err = pcall(function()
+                    console.ExecuteConsole("player.moveto " .. marker)
+                end)
+                if ok then
+                    writeLog("Dungeon warp accepted -> player.moveto " .. marker)
+                else
+                    writeLog("Dungeon warp moveto failed: " .. tostring(err), "ERROR")
+                end
+                return
+            end
+
+            if text == "Warp refused" then
+                actualHudVM.Notification.ShowSeconds = 0.0001
+                pendingWarpMarker = nil
+                writeLog("Dungeon warp refused")
                 return
             end
 
@@ -4042,7 +5232,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         end
                         -- Refresh settings to learn disk-initialized state for the current prefix
                         pcall(function() loadSettings() end)
-                        if modFullyInitialized then
+                        if init.modFully then
                             if reinitPending then
                                 writeLog("APAppliedCount=0 with reinit already pending; waiting for player response")
                                 return
@@ -4268,18 +5458,21 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 clearedName = (clearedName or ""):match("^%s*(.-)%s*$")
                 writeLog("Parsed dungeon cleared name: '" .. tostring(clearedName) .. "'")
 
-                -- Validate against settings-chosen dungeons and ensure its region is unlocked via receipts
+                -- Seed dungeon checks only. Bounty warps are offered from Lua when the
+                -- contract completes; they do not wait on CK Dungeon Cleared.
                 local regionName = findRegionForDungeon(clearedName)
+                if regionName then
+                    bossChestTrackingEnabled = false
+                    clearAPXMarker()
+                    writeLog("Stopped boss-chest autotrack after Dungeon Cleared: " .. clearedName)
+                end
                 if regionName and isRegionUnlockedViaReceipts(regionName) then
-                    -- Check if this dungeon was already cleared
                     if isCompletionAlreadyRecorded(text) then
                         writeLog("Duplicate dungeon clear detected, ignoring: " .. clearedName, "DEBUG")
                     else
-                        -- Send completion to AP client
-                        writeCompletionStatus(text) -- Preserve existing completion token format
+                        writeCompletionStatus(text)
                         writeLog("Validated Dungeon Cleared: " .. clearedName .. " (Region: " .. regionName .. ")")
 
-                        -- Decrement AP<Region>DungeonCount by 1
                         local regionVar = "AP" .. regionName:gsub("%W", "") .. "DungeonCount"
                         local decCmd = "set " .. regionVar .. " to " .. regionVar .. " - 1"
                         local okDec, errDec = pcall(function()
@@ -4290,23 +5483,14 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         else
                             writeLog("Failed to decrement " .. regionVar .. ": " .. tostring(errDec), "ERROR")
                         end
-                        
-                        -- Signal in-game quest to offer warp
-                        local okWarp, errWarp = pcall(function()
-                            console.ExecuteConsole("set APOfferWarp to 1")
-                        end)
-                        if okWarp then
-                            writeLog("Set APOfferWarp to 1 for dungeon clear: " .. clearedName)
-                        else
-                            writeLog("Failed to set APOfferWarp: " .. tostring(errWarp), "ERROR")
-                        end
+                        require("MapPins").recycleRegionDungeonPin(regionName, clearedName)
+                        state.offerDungeonWarp(clearedName)
                     end
                 else
-                    -- Not validated; just log
                     if regionName then
                         writeLog("Dungeon Clear ignored (region locked): '" .. tostring(clearedName) .. "' in region '" .. tostring(regionName) .. "'", "DEBUG")
                     else
-                        writeLog("Dungeon Clear not found in this seed: '" .. tostring(clearedName) .. "'", "WARNING")
+                        writeLog("Dungeon Clear ignored (not a seed dungeon check): '" .. tostring(clearedName) .. "'", "DEBUG")
                     end
                 end
                 return
@@ -4422,6 +5606,16 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 writeLog("Gold milestone recorded: " .. goldAmount .. " Gold Collected")
                 return
             end
+
+            local fenceAmount = text:match("^Black Market: (%d+) Gold Fenced$")
+            if fenceAmount then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                writeCompletionStatus(text)
+                writeLog("Black Market fence recorded: " .. text)
+                return
+            end
             
             -- Handle Nirnroot harvest messages
             if text == "Nirnroot Harvested" then
@@ -4433,6 +5627,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 -- Send check to client
                 writeCompletionStatus("Nirnroot Harvested")
                 writeLog("Nirnroot Harvested check sent to client")
+                state.redetectNirnrootAfterHarvest()
                 
                 return
             end
@@ -4447,6 +5642,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 -- Send check to client
                 writeCompletionStatus("Nirnroot Harvested")
                 writeLog("Nirnroot Harvested check sent to client")
+                state.redetectNirnrootAfterHarvest()
                 
                 return
             end
@@ -4470,10 +5666,18 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 pcall(function()
                     actualHudVM.Notification.ShowSeconds = 0.0001
                 end)
-
                 writeCompletionStatus("Victory")
                 writeLog("Treasure Hunter Victory written to completion file")
+                return
+            end
 
+            -- Handle Bounty Hunter Victory message
+            if text == "Bounty Hunter Victory" then
+                pcall(function()
+                    actualHudVM.Notification.ShowSeconds = 0.0001
+                end)
+                writeCompletionStatus("Victory")
+                writeLog("Bounty Hunter Victory written to completion file")
                 return
             end
 
@@ -4712,137 +5916,19 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 writeLog("Light the Dragonfires Victory written to completion file")
                 return
             end
-            
 
-            -- ========================================
-            -- DEBUG SECTION, LEAVE FOR NOW BUT CAN CLEAN UP LATER
-            -- ========================================
-            -- Handle Kill Tracking Toggle Commands
-            if text == "APKillTracking Enable" then
-                pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 0.0001
+            do
+                local okBounty, bountyHit = pcall(function()
+                    return require("BountyTracking").tryCompleteFromToken(text)
                 end)
-                
-                if not killTrackingEnabled then
-                    killTrackingEnabled = true
-                    initializeKillTracking()
-                    writeLog("Kill tracking enabled via console command")
+                if okBounty and bountyHit then
                     pcall(function()
-                        console.ExecuteConsole('Message "Kill tracking enabled"')
+                        actualHudVM.Notification.ShowSeconds = 0.0001
                     end)
-                else
-                    writeLog("Kill tracking already enabled")
-                    pcall(function()
-                        console.ExecuteConsole('Message "Kill tracking already enabled"')
-                    end)
-                end
-                return
-            end
-            
-            if text == "APKillTracking Disable" then
-                pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 0.0001
-                end)
-                
-                killTrackingEnabled = false
-                writeLog("Kill tracking disabled via console command")
-                pcall(function()
-                    console.ExecuteConsole('Message "Kill tracking disabled"')
-                end)
-                return
-            end
-            
-            -- Handle Nirnroot Detection and Guidance
-            if text == "AP_FIND_NIRNROOT" then
-                pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 0.0001
-                end)
-                if not nirnrootInSeed then return end
-                writeLog("Nirnroot detection triggered")
-                
-                if not ActorDetection then
-                    local success, module = pcall(function() return require("ActorDetection") end)
-                    if success then ActorDetection = module else return end
-                end
-                
-                local player = UEHelpers:GetPlayer()
-                if not player then
-                    writeLog("Player not found for Nirnroot detection", "ERROR")
                     return
                 end
-                
-                local nirnroot, error = ActorDetection.FindNearestNirnroot(player)
-                
-                if nirnroot then
-                    writeLog(string.format("Nirnroot found: %dm %s (bearing %d°)", 
-                        nirnroot.distanceMeters, nirnroot.compassDirection, nirnroot.bearing))
-                    
-                    -- Send two separate simple messages
-                    pcall(function()
-                        console.ExecuteConsole('Message "Nirnroot detected"')
-                    end)
-                    
-                    local detailMsg = string.format('Message "direction - %s, distance: %dm"', nirnroot.compassDirection, nirnroot.distanceMeters)
-                    pcall(function()
-                        console.ExecuteConsole(detailMsg)
-                    end)
-                else
-                    local errorMsg = error or "No Nirnroot found"
-                    writeLog("Nirnroot detection failed: " .. errorMsg)
-                    pcall(function()
-                        console.ExecuteConsole('Message "No Nirnroot found"')
-                    end)
-                end
-                return
-            end
-            
-            -- Handle Boss Container Search
-            if text == "AP_FIND_BOSS_CHEST" then
-                pcall(function()
-                    actualHudVM.Notification.ShowSeconds = 0.0001
-                end)
-                
-                writeLog("Boss container search triggered")
-                
-                if not ActorDetection then
-                    local success, module = pcall(function() return require("ActorDetection") end)
-                    if success then ActorDetection = module else return end
-                end
-                
-                local containers = ActorDetection.DetectNearbyContainers()
-                local bossContainers = {}
-                
-                for formID, data in pairs(containers) do
-                    if data.fullName:lower():match("boss") or data.name:lower():match("boss") then
-                        table.insert(bossContainers, {
-                            formID = formID,
-                            name = data.name,
-                            fullName = data.fullName,
-                            location = data.location
-                        })
-                    end
-                end
-                
-                if #bossContainers > 0 then
-                    writeLog("Found " .. #bossContainers .. " boss containers")
-                    pcall(function()
-                        console.ExecuteConsole('Message "Found ' .. #bossContainers .. ' boss containers nearby"')
-                    end)
-                else
-                    writeLog("No boss containers found")
-                    pcall(function()
-                        console.ExecuteConsole('Message "No boss containers found in range"')
-                    end)
-                end
-                return
             end
 
-            -- ========================================
-            -- ^^^  DEBUG SECTION, LEAVE FOR NOW BUT CAN CLEAN UP LATER
-            -- ========================================
-            
-            -- Cycle tracking mode: Off -> Nirnroot -> Boss Chest -> Off
-            -- Triggered by F11 keybind
             if text == "AP_TOGGLE_TRACK" then
                 pcall(function() actualHudVM.Notification.ShowSeconds = 0.0001 end)
                 local canNirn = nirnrootInSeed and not nirnrootManualOff
@@ -4855,7 +5941,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                         pcall(function() console.ExecuteConsole('Message "Tracking Nirnroot ON"') end)
                     elseif canChest then
                         bossChestTrackingEnabled = true
-                        lastBossChestMessage = 0
+                        lastBossChestMessage = os.clock()
                         lastTrackingUpdate = 0
                         pcall(function() console.ExecuteConsole('Message "Tracking Boss Chest ON"') end)
                     end
@@ -4864,7 +5950,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                     if canChest then
                         clearAPXMarker()
                         bossChestTrackingEnabled = true
-                        lastBossChestMessage = 0
+                        lastBossChestMessage = os.clock()
                         lastTrackingUpdate = 0
                         pcall(function() console.ExecuteConsole('Message "Tracking Boss Chest ON"') end)
                     else
@@ -4879,14 +5965,13 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 return
             end
 
-            -- Handle Nirnroot Tracking Toggle
             if text == "AP_TRACK_NIRNROOT" then
                 pcall(function()
                     actualHudVM.Notification.ShowSeconds = 0.0001
                 end)
-                
+
                 nirnrootTrackingEnabled = not nirnrootTrackingEnabled
-                
+
                 if nirnrootTrackingEnabled then
                     lastTrackingUpdate = 0
                     lastNirnrootMessage = os.clock() - NIRNROOT_MESSAGE_INTERVAL + 3
@@ -4902,17 +5987,16 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 end
                 return
             end
-            
-            -- Handle Boss Chest Tracking Toggle
+
             if text == "AP_TRACK_BOSS_CHEST" then
                 pcall(function()
                     actualHudVM.Notification.ShowSeconds = 0.0001
                 end)
-                
+
                 bossChestTrackingEnabled = not bossChestTrackingEnabled
-                
+
                 if bossChestTrackingEnabled then
-                    lastTrackingUpdate = 0  -- Force immediate update
+                    lastTrackingUpdate = 0
                     writeLog("Boss chest tracking enabled")
                     pcall(function()
                         console.ExecuteConsole('Message "Boss chest tracking ON"')
@@ -4926,7 +6010,7 @@ RegisterHook("/Script/Altar.VLevelChangeData:OnFadeToGameBeginEventReceived", fu
                 return
             end
         end)
-        notificationHookRegistered = true
+        state.notificationHookRegistered = true
         writeLog("Notification hook registered for event tracking")
         end
     end)
