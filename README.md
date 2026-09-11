@@ -6,15 +6,15 @@ A UE4SS and `.esp` mod that adds [Archipelago multiworld](https://archipelago.gg
 - [Oblivion Archipelago Mod](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
 - [Oblivion Archipelago APWorld](https://github.com/POD-io/Oblivion-ArchipelagoWorld/releases/latest)
 
-## All-in-One Installation (Option 1)
+## Automated Installer [Windows] (Option 1)
 
 This method is ideal for users who wish to avoid using a mod manager or prefer the simplest installation method.
 
 If you plan to use a mod manager, please use [Option 2](#mod-manager-installation-option-2) instead.
 
-### To use the all-in-one installer:
+### To use the automated installer:
 
-1. Download the All-in-one installer for your platform from the [Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest).
+1. Download the Automated installer from the [Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest).
 
 2. Extract the folder to any location.
 
@@ -26,11 +26,11 @@ If you plan to use a mod manager, please use [Option 2](#mod-manager-installatio
 The script will automatically install or update all required files directly in your Oblivion game folder.  
 
 > **IMPORTANT:**  
-Using the all-in-one method, you **must** launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
+Using the automated method, you **must** launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
 
-If you'd like to automatically launch the above .exe via Steam, follow these steps - 
-Right click the game in your steam library -> properties -> paste this into launch options but change the path your install:
-"F:\SteamLibrary\steamapps\common\Oblivion Remastered\OblivionRemastered\Binaries\Win64\obse64_loader.exe" -- %command%
+If you'd like to automatically launch the above .exe via Steam, follow these steps -  
+Right click the game in your steam library -> properties -> paste this into launch options, but change the path your install:  
+`"F:\SteamLibrary\steamapps\common\Oblivion Remastered\OblivionRemastered\Binaries\Win64\obse64_loader.exe" -- %command%`
 
 > **Note:**  If you wish to play Oblivion **without** Archipelago, you'll need to run the uninstall file to return to a Vanilla install state.
 
