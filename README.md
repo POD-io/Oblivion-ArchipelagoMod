@@ -34,11 +34,11 @@ Right click the game in your steam library -> properties -> paste this into laun
 
 > **Note:**  If you wish to play Oblivion **without** Archipelago, you'll need to run the uninstall file to return to a Vanilla install state.
 
+When you have completed the above, jump to [how to use.](#how-to-use)
+
 ## Mod Manager Installation (Option 2)
 
 If you are already using MO2 or prefer to use a mod manager for easy on/off toggling of your mods, please use this option.
-
-If you used Option 1 above, you can [skip](#how-to-use) this section.
 
 ##### 1. Install the Dev Branch of MO2:
 This can be acquired on the [MO2 Discord](https://discord.gg/Jjprnb5rDJ)  
