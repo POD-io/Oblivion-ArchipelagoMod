@@ -1,8 +1,10 @@
 ## Archipelago Mod for Oblivion Remastered
 
-A UE4SS and .esp mod that adds [Archipelago multiworld](https://archipelago.gg/) support for Oblivion Remastered.
+A UE4SS and `.esp` mod that adds [Archipelago multiworld](https://archipelago.gg/) support for Oblivion Remastered.
 
-[Download Latest Release](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
+**Required Downloads**
+- [Oblivion Archipelago Mod](https://github.com/POD-io/Oblivion-ArchipelagoMod/releases/latest)
+- [Oblivion Archipelago APWorld](https://github.com/POD-io/Oblivion-ArchipelagoWorld/releases/latest)
 
 ## All-in-One Installation (Option 1)
 
@@ -23,8 +25,12 @@ If you plan to use a mod manager, please use [Option 2](#mod-manager-installatio
 
 The script will automatically install or update all required files directly in your Oblivion game folder.  
 
-**IMPORTANT:**  
-**Windows:** Once successfully installed, you must launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
+> **IMPORTANT:**  
+Using the all-in-one method, you **must** launch your game with **obse64_loader.exe**, located in: OblivionRemastered\Binaries\Win64
+
+If you'd like to automatically launch the above .exe via Steam, follow these steps - 
+Right click the game in your steam library -> properties -> paste this into launch options but change the path your install:
+"F:\SteamLibrary\steamapps\common\Oblivion Remastered\OblivionRemastered\Binaries\Win64\obse64_loader.exe" -- %command%
 
 > **Note:**  If you wish to play Oblivion **without** Archipelago, you'll need to run the uninstall file to return to a Vanilla install state.
 
